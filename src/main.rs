@@ -17,6 +17,7 @@ use winit::{
 pub mod reader;
 mod visualizer;
 
+use crate::reader::FileSource;
 use crate::visualizer::GRID_SIZE;
 use visualizer::Visualizer;
 
@@ -69,8 +70,8 @@ impl ApplicationHandler for App {
                     window.request_redraw();
                     Some(pixels)
                 }
-                Err(err) => {
-                    eprintln!("failed to create pixel buffer: {}", err);
+                Err(e) => {
+                    eprintln!("failed to create pixel buffer: {}", e);
                     event_loop.exit();
                     None
                 }
@@ -116,8 +117,8 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                if let Err(err) = self.draw() {
-                    eprintln!("render error: {}", err);
+                if let Err(e) = self.draw() {
+                    eprintln!("render error: {}", e);
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => match event.physical_key {
@@ -138,7 +139,8 @@ fn main() -> Result<(), EventLoopError> {
     }
 
     let log_path = &args[1];
-    let visualizer = Visualizer::new(log_path).expect("failed to open log file");
+    let source = FileSource::new(log_path).expect("failed to open log file");
+    let visualizer = Visualizer::new(Box::new(source));
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + FRAME_DURATION));
