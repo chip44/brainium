@@ -4,16 +4,19 @@ use std::collections::HashMap;
 use crate::reader::FileStreamer;
 use anyhow::Result;
 
-const HILBERT_ORDER: u8 = 10;
+const HILBERT_ORDER: u8 = 9;
 pub const GRID_SIZE: u32 = 1 << HILBERT_ORDER; // 1024
-const DECAY_FACTOR: f32 = 0.95;
+const DECAY_FACTOR: f32 = 0.97;
 const CHUNK_SIZE: usize = 1000;
 
 fn addr_to_coords(addr: u64) -> (u32, u32) {
     let max_index = (1u64 << (2 * HILBERT_ORDER)) - 1;
     let index = addr & max_index;
-    let coords = h2xy(index, HILBERT_ORDER);
-    (coords.0, coords.1)
+    h2xy(index, HILBERT_ORDER)
+}
+
+fn coords_to_grid(x: u32, y: u32) -> usize {
+    ((y as usize) * GRID_SIZE as usize + (x as usize)) * 4
 }
 
 fn heat_to_color(heat: f32) -> [u8; 4] {
@@ -90,16 +93,19 @@ impl Visualizer {
     }
 
     pub fn render(&mut self, frame: &mut [u8]) {
+        // clear screen
         for pixel in frame.chunks_exact_mut(4) {
             pixel.copy_from_slice(&[0, 0, 0, 255]);
         }
 
+        // draw heatmap
         for ((x, y), heat) in &self.heat_map.data {
-            let idx = ((*y as usize) * GRID_SIZE as usize + (*x as usize)) * 4;
+            let idx = coords_to_grid(*x, *y);
             let color = heat_to_color(*heat);
             frame[idx..idx + 4].copy_from_slice(&color);
         }
 
+        // update heatmap
         self.heat_map.decay();
     }
 }

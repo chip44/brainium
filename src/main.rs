@@ -118,7 +118,6 @@ impl ApplicationHandler for App {
 
                 if let Err(err) = self.draw() {
                     eprintln!("render error: {}", err);
-                    event_loop.exit();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => match event.physical_key {
