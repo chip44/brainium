@@ -1,0 +1,13 @@
+Checks: >
+  *,
+  -modernize-*,
+  -hicpp-*,
+  -cppcoreguidelines-*,
+  -misc-unused-parameters,
+  -readability-identifier-length,
+  -bugprone-easily-swappable-parameters,
+  -altera-unroll-loops,
+  -llvmlibc-restrict-system-libc-headers,
+  -llvmlibc-implementation-in-namespace,
+  -google-objc-function-naming
+HeaderFilterRegex: ""
