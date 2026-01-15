@@ -1,15 +1,21 @@
-#include <stddef.h> /* for offsetof */
+#include <fcntl.h>
+#include <stdatomic.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <string.h> /* for memset */
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
-#define OUTPUT_TEXT 1
-#define LINUX
-#define X86_64
+#define LINUX 1
+#define X86_64 1
 
 // #include "dr_api.h"
+//
 // #include "drmgr.h"
 // #include "drreg.h"
 // #include "drutil.h"
+// #include "drvector.h"
 // #include "drx.h"
 
 #include "/opt/dynamorio/include/dr_api.h"
@@ -17,14 +23,13 @@
 #include "/opt/dynamorio/ext/include/drmgr.h"
 #include "/opt/dynamorio/ext/include/drreg.h"
 #include "/opt/dynamorio/ext/include/drutil.h"
+#include "/opt/dynamorio/ext/include/drvector.h"
 #include "/opt/dynamorio/ext/include/drx.h"
-
-#include "utils.h"
 
 /* Each mem_ref_t includes the type of reference (read or write),
  * the address referenced, and the size of the reference.
  */
-typedef struct {
+typedef struct __attribute__((aligned(32))) {
     bool write;
     void *addr;
     size_t size;
@@ -32,37 +37,43 @@ typedef struct {
 } mem_ref_t;
 
 /* Max number of mem_ref a buffer can have */
-#define MAX_NUM_MEM_REFS 8192
+#define MAX_NUM_MEM_REFS (1 << 13)
 /* The size of memory buffer for holding mem_refs. When it fills up,
- * we dump data from the buffer to the file.
+ * we dump data from the buffer to shm.
  */
 #define MEM_BUF_SIZE (sizeof(mem_ref_t) * MAX_NUM_MEM_REFS)
 
-/* thread private log file and counter */
-typedef struct {
+#define SHM_RING_SIZE (1 << 20)
+
+/* thread-private counter */
+typedef struct __attribute__((aligned(64))) {
     char *buf_ptr;
     char *buf_base;
     /* buf_end holds the negative value of real address of buffer end. */
     ptr_int_t buf_end;
     void *cache;
-    file_t log;
-#if OUTPUT_TEXT
-    FILE *logf;
-#endif
     uint64 num_refs;
 } per_thread_t;
 
-/* Cross-instrumentation-phase data. */
+/* cross-instrumentation-phase data */
 typedef struct {
     app_pc last_pc;
 } instru_data_t;
 
+/* shared memory ring buffer */
+typedef struct __attribute__((aligned(128))) {
+    _Atomic uint64_t write_idx;
+    _Atomic uint64_t read_idx;
+    _Atomic uint64_t dropped;
+    uint64_t _pad;
+    mem_ref_t entries[SHM_RING_SIZE];
+} shm_ring_t;
+
 static size_t page_size;
 static client_id_t client_id;
 static app_pc code_cache;
-static void *mutex;            /* for multithread support */
-static uint64 global_num_refs; /* keep a global memory reference count */
 static int tls_index;
+static shm_ring_t *ring;
 
 static void event_exit(void);
 static void event_thread_init(void *drcontext);
@@ -80,6 +91,8 @@ static void code_cache_init(void);
 static void code_cache_exit(void);
 static void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc,
                            instr_t *memref_instr, int pos, bool write);
+static void shm_init(void);
+static void shm_exit(void);
 
 DR_EXPORT void
 dr_client_main(client_id_t id, int argc, const char *argv[])
@@ -97,7 +110,6 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     drmgr_init();
     drutil_init();
     client_id = id;
-    mutex = dr_mutex_create();
     dr_register_exit_event(event_exit);
     if (!drmgr_register_thread_init_event(event_thread_init) ||
         !drmgr_register_thread_exit_event(event_thread_exit) ||
@@ -111,6 +123,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     tls_index = drmgr_register_tls_field();
     DR_ASSERT(tls_index != -1);
 
+    shm_init();
     code_cache_init();
     /* make it easy to tell, by looking at log file, which client executed */
     dr_log(NULL, DR_LOG_ALL, 1, "Brainium client initializing\n");
@@ -120,6 +133,7 @@ static void
 event_exit()
 {
     code_cache_exit();
+    shm_exit();
 
     if (!drmgr_unregister_tls_field(tls_index) ||
         !drmgr_unregister_thread_init_event(event_thread_init) ||
@@ -128,17 +142,10 @@ event_exit()
         DR_ASSERT(false);
     }
 
-    dr_mutex_destroy(mutex);
     drutil_exit();
     drmgr_exit();
     drx_exit();
 }
-
-#ifdef WINDOWS
-#define IF_WINDOWS(x) x
-#else
-#define IF_WINDOWS(x) /* nothing */
-#endif
 
 static void
 event_thread_init(void *drcontext)
@@ -153,21 +160,6 @@ event_thread_init(void *drcontext)
     /* set buf_end to be negative of address of buffer end for the lea later */
     data->buf_end = -(ptr_int_t)(data->buf_base + MEM_BUF_SIZE);
     data->num_refs = 0;
-
-    /* We're going to dump our data to a per-thread file.
-     * On Windows we need an absolute path so we place it in
-     * the same directory as our library. We could also pass
-     * in a path as a client argument.
-     */
-    data->log = log_file_open(client_id, drcontext, NULL /* using client lib path */, "memtrace",
-#ifndef WINDOWS
-                              DR_FILE_CLOSE_ON_FORK |
-#endif
-                                  DR_FILE_ALLOW_LARGE);
-#if OUTPUT_TEXT
-    data->logf = log_stream_from_file(data->log);
-    fprintf(data->logf, "Format: <instr address>,<(r)ead/(w)rite>,<data size>,<data address>\n");
-#endif
 }
 
 static void
@@ -177,14 +169,6 @@ event_thread_exit(void *drcontext)
 
     memtrace(drcontext);
     data = drmgr_get_tls_field(drcontext, tls_index);
-    dr_mutex_lock(mutex);
-    global_num_refs += data->num_refs;
-    dr_mutex_unlock(mutex);
-#ifdef OUTPUT_TEXT
-    log_stream_close(data->logf); /* closes fd too */
-#else
-    log_file_close(data->log);
-#endif
     dr_thread_free(drcontext, data->buf_base, MEM_BUF_SIZE);
     dr_thread_free(drcontext, data, sizeof(per_thread_t));
 }
@@ -268,37 +252,37 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *where, boo
 static void
 memtrace(void *drcontext)
 {
-    per_thread_t *data = NULL;
-    int num_refs = 0;
-    mem_ref_t *mem_ref = NULL;
-#ifdef OUTPUT_TEXT
-    int i = 0;
-#endif
+    per_thread_t *data = drmgr_get_tls_field(drcontext, tls_index);
 
-    data = drmgr_get_tls_field(drcontext, tls_index);
-    mem_ref = (mem_ref_t *)data->buf_base;
-    num_refs = (int)((mem_ref_t *)data->buf_ptr - mem_ref);
-
-#ifdef OUTPUT_TEXT
-    /* We use libc's fprintf as it is buffered and much faster than dr_fprintf
-     * for repeated printing that dominates performance, as the printing does here.
-     */
-    for (i = 0; i < num_refs; i++) {
-        /* We use PIFX to avoid leading zeroes and shrink the resulting file. */
-        fprintf(data->logf, PIFX ",%c,%d," PIFX "\n", (ptr_uint_t)mem_ref->pc,
-                mem_ref->write ? 'w' : 'r', (int)mem_ref->size, (ptr_uint_t)mem_ref->addr);
-        ++mem_ref;
+    mem_ref_t *mem_ref = (mem_ref_t *)data->buf_base;
+    size_t num_refs = (mem_ref_t *)data->buf_ptr - mem_ref;
+    if (num_refs == 0) {
+        return;
     }
-#else
-    dr_write_file(data->log, data->buf_base, (size_t)(data->buf_ptr - data->buf_base));
-#endif
+
+    uint64_t w = atomic_load_explicit(&ring->write_idx, memory_order_relaxed);
+    uint64_t r = atomic_load_explicit(&ring->read_idx, memory_order_acquire);
+
+    uint64_t free_slots = SHM_RING_SIZE - (w - r);
+
+    if (num_refs > free_slots) {
+        // drop newest events that don't fit
+        atomic_fetch_add_explicit(&ring->dropped, num_refs - free_slots, memory_order_relaxed);
+        num_refs = free_slots;
+    }
+
+    for (size_t i = 0; i < num_refs; i++) {
+        ring->entries[(w + i) & (SHM_RING_SIZE - 1)] = mem_ref[i];
+    }
+
+    atomic_store_explicit(&ring->write_idx, w + num_refs, memory_order_release);
 
     memset(data->buf_base, 0, MEM_BUF_SIZE);
     data->num_refs += num_refs;
     data->buf_ptr = data->buf_base;
 }
 
-/* clean_call dumps the memory reference info to the log file */
+/* clean_call dumps the memory reference info to shm */
 static void
 clean_call(void)
 {
@@ -484,4 +468,27 @@ instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc,
         drreg_unreserve_register(drcontext, ilist, where, reg2) != DRREG_SUCCESS) {
         DR_ASSERT(false);
     }
+}
+
+static void
+shm_init(void)
+{
+    int fd = shm_open("/brainium_shm", O_CREAT | O_RDWR, 0666);
+    ftruncate(fd, sizeof(shm_ring_t));
+
+    ring = mmap(NULL, sizeof(shm_ring_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+    close(fd);
+
+    memset(ring, 0, sizeof(*ring));
+}
+
+static void
+shm_exit(void)
+{
+    if (ring) {
+        munmap(ring, sizeof(shm_ring_t));
+        ring = NULL;
+    }
+    shm_unlink("/brainium_shm");
 }

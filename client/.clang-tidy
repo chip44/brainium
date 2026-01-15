@@ -5,8 +5,10 @@ Checks: >
   -cppcoreguidelines-*,
   -misc-unused-parameters,
   -readability-identifier-length,
+  -readability-magic-numbers,
   -bugprone-easily-swappable-parameters,
   -altera-unroll-loops,
+  -altera-id-dependent-backward-branch,
   -llvmlibc-restrict-system-libc-headers,
   -llvmlibc-implementation-in-namespace,
   -google-objc-function-naming
