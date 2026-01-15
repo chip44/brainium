@@ -6,7 +6,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 add_compile_definitions(_POSIX_C_SOURCE=200112L)
 
-add_library(client SHARED client.c)
+add_library(client SHARED main.c)
 
 find_package(DynamoRIO CONFIG REQUIRED)
 configure_DynamoRIO_client(client)
