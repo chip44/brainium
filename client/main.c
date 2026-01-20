@@ -1,4 +1,6 @@
+#include <assert.h>
 #include <fcntl.h>
+#include <stdalign.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -35,6 +37,9 @@ typedef struct __attribute__((aligned(32))) {
     size_t size;
     app_pc pc;
 } mem_ref_t;
+
+_Static_assert(sizeof(mem_ref_t) == 32, "mem_ref_t must be 32 bytes");
+_Static_assert(_Alignof(mem_ref_t) == 32, "mem_ref_t must be 32-byte aligned");
 
 /* Max number of mem_ref a buffer can have */
 #define MAX_NUM_MEM_REFS (1 << 13)
@@ -265,19 +270,31 @@ memtrace(void *drcontext)
 
     uint64_t free_slots = SHM_RING_SIZE - (w - r);
 
+    // drop oldest events that don't fit
     if (num_refs > free_slots) {
-        // drop newest events that don't fit
-        atomic_fetch_add_explicit(&ring->dropped, num_refs - free_slots, memory_order_relaxed);
-        num_refs = free_slots;
+        uint64_t to_drop = num_refs - free_slots;
+
+        // advance read idx to drop oldest events
+        uint64_t new_r = r + to_drop;
+        atomic_store_explicit(&ring->read_idx, new_r, memory_order_relaxed);
+
+        // update dropped counter
+        atomic_fetch_add_explicit(&ring->dropped, to_drop, memory_order_relaxed);
+
+        // now we have space for new events :)
+        r = new_r;
     }
 
+    // write events to ring buffer
     for (size_t i = 0; i < num_refs; i++) {
-        ring->entries[(w + i) & (SHM_RING_SIZE - 1)] = mem_ref[i];
+        size_t idx = (w + i) & (SHM_RING_SIZE - 1);
+        ring->entries[idx] = mem_ref[i];
     }
 
+    // publish the write
     atomic_store_explicit(&ring->write_idx, w + num_refs, memory_order_release);
 
-    memset(data->buf_base, 0, MEM_BUF_SIZE);
+    // reset buffer pointers
     data->num_refs += num_refs;
     data->buf_ptr = data->buf_base;
 }
