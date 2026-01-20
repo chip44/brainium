@@ -34,7 +34,7 @@ impl FileSource {
         Ok(Self { reader })
     }
 
-    fn process_line(&self, line: &str) -> Result<MemEvent> {
+    fn process_line(line: &str) -> Result<MemEvent> {
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() != 4 {
             bail!("invalid format");
@@ -65,7 +65,7 @@ impl DataSource for FileSource {
                 break;
             }
 
-            match self.process_line(line.trim()) {
+            match Self::process_line(line.trim()) {
                 Ok(event) => events.push(event),
                 Err(e) => eprintln!("failed processing line '{}': {}", line.trim(), e),
             }

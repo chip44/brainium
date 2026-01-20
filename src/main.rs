@@ -71,7 +71,7 @@ impl ApplicationHandler for App {
                     Some(pixels)
                 }
                 Err(e) => {
-                    eprintln!("failed to create pixel buffer: {}", e);
+                    eprintln!("failed to create pixel buffer: {e}");
                     event_loop.exit();
                     None
                 }
@@ -110,7 +110,7 @@ impl ApplicationHandler for App {
                             return;
                         }
                         Err(e) => {
-                            eprintln!("error processing chunk: {}", e);
+                            eprintln!("error processing chunk: {e}");
                             event_loop.exit();
                             return;
                         }
@@ -118,7 +118,7 @@ impl ApplicationHandler for App {
                 }
 
                 if let Err(e) = self.draw() {
-                    eprintln!("render error: {}", e);
+                    eprintln!("render error: {e}");
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => match event.physical_key {

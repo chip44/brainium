@@ -14,7 +14,7 @@ fn addr_to_coords(addr: u64) -> (u32, u32) {
     h2xy(index, HILBERT_ORDER)
 }
 
-fn coords_to_grid(x: u32, y: u32) -> usize {
+const fn coords_to_grid(x: u32, y: u32) -> usize {
     ((y as usize) * GRID_SIZE as usize + (x as usize)) * 4
 }
 
@@ -77,16 +77,16 @@ impl Visualizer {
     }
 
     pub fn process_chunk(&mut self) -> Result<bool> {
-        match self.source.poll_chunk()? {
-            Some(chunk) => {
+        self.source.poll_chunk()?.map_or_else(
+            || Ok(false),
+            |chunk| {
                 self.apply_chunk(chunk);
                 Ok(true)
-            }
-            None => Ok(false),
-        }
+            },
+        )
     }
 
-    fn apply_chunk(&mut self, chunk: Vec<MemEvent>) -> () {
+    fn apply_chunk(&mut self, chunk: Vec<MemEvent>) {
         for event in chunk {
             let (x, y) = addr_to_coords(event.data_addr);
             self.heatmap.add_access(x, y, event.is_write);

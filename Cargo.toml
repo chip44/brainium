@@ -11,3 +11,9 @@ anyhow = "1.0.100"
 fast_hilbert = "2.0.2"
 pixels = "0.15.0"
 winit = "0.30.12"
+
+[lints.clippy]
+enum_glob_use = "deny"
+pedantic = "deny"
+nursery = "deny"
+unwrap_used = "deny"
