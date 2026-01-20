@@ -3,6 +3,9 @@ name = "brainium"
 version = "0.1.0"
 edition = "2024"
 
+[build-dependencies]
+cmake = "0.1"
+
 [dependencies]
 anyhow = "1.0.100"
 fast_hilbert = "2.0.2"
