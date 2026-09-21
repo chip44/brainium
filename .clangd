@@ -1,0 +1,23 @@
+CompileFlags:
+  Add:
+    [
+      -xc,
+      -Wall,
+      -Wextra,
+      -Wconversion,
+      -Wshadow,
+      -Wstrict-prototypes,
+      -Wmissing-prototypes,
+      -Wold-style-definition,
+      -pedantic,
+      -I/opt/dynamorio-git/include,
+      -I/opt/dynamorio-git/ext/include,
+      -DLINUX,
+      -DX86_64,
+    ]
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+  Includes:
+    IgnoreHeader:
+      - bits/types/FILE.h

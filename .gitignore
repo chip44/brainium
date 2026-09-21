@@ -1,2 +1,2 @@
-target
-client/build
+target/
+build/

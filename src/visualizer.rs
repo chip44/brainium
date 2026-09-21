@@ -2,7 +2,7 @@ use fast_hilbert::h2xy;
 use std::collections::HashMap;
 
 use crate::reader::{DataSource, MemEvent};
-use anyhow::Result;
+use color_eyre::Result;
 
 const HILBERT_ORDER: u8 = 9;
 pub const GRID_SIZE: u32 = 1 << HILBERT_ORDER; // 1024
@@ -15,7 +15,7 @@ fn addr_to_coords(addr: u64) -> (u32, u32) {
 }
 
 const fn coords_to_grid(x: u32, y: u32) -> usize {
-    ((y as usize) * GRID_SIZE as usize + (x as usize)) * 4
+    ((y as usize) * (GRID_SIZE as usize) + (x as usize)) * 4
 }
 
 fn heat_to_color(heat: f32) -> [u8; 4] {
@@ -95,7 +95,7 @@ impl Visualizer {
 
     pub fn render(&mut self, frame: &mut [u8]) {
         // clear screen
-        for pixel in frame.chunks_exact_mut(4) {
+        for pixel in frame.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&[0, 0, 0, 255]);
         }
 

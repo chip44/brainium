@@ -11,5 +11,7 @@ Checks: >
   -altera-id-dependent-backward-branch,
   -llvmlibc-restrict-system-libc-headers,
   -llvmlibc-implementation-in-namespace,
-  -google-objc-function-naming
+  -google-objc-function-naming,
+  -cert-err33-c,
+  -concurrency-mt-unsafe
 HeaderFilterRegex: ""

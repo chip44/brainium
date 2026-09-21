@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.14)
 project(client)
 
 set(CMAKE_C_STANDARD 99)
@@ -8,8 +8,10 @@ add_compile_definitions(_POSIX_C_SOURCE=200112L)
 
 add_library(client SHARED main.c)
 
-find_package(DynamoRIO CONFIG REQUIRED)
+find_package(DynamoRIO REQUIRED)
+
 configure_DynamoRIO_client(client)
+
 use_DynamoRIO_extension(client drmgr)
 use_DynamoRIO_extension(client drreg)
 use_DynamoRIO_extension(client drutil)

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use color_eyre::Result;
 use pixels::{Pixels, SurfaceTexture};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ use winit::{
 pub mod reader;
 mod visualizer;
 
-use crate::reader::FileSource;
+use crate::reader::RingSource;
 use crate::visualizer::GRID_SIZE;
 use visualizer::Visualizer;
 
@@ -106,7 +106,7 @@ impl ApplicationHandler for App {
                             self.last_update = Instant::now();
                         }
                         Ok(false) => {
-                            eprintln!("EOF");
+                            // eprintln!("EOF");
                             return;
                         }
                         Err(e) => {
@@ -133,13 +133,14 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<(), EventLoopError> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        std::process::exit(1);
-    }
+    // let args: Vec<_> = std::env::args().collect();
+    // if args.len() < 2 {
+    //     std::process::exit(1);
+    // }
+    // let log_path = &args[1];
+    // let source = FileSource::new(log_path).expect("failed to open log file");
 
-    let log_path = &args[1];
-    let source = FileSource::new(log_path).expect("failed to open log file");
+    let source = RingSource::new().expect("failed to open shared memory");
     let visualizer = Visualizer::new(Box::new(source));
 
     let event_loop = EventLoop::new().unwrap();

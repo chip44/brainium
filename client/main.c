@@ -9,24 +9,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#define LINUX 1
-#define X86_64 1
-
-// #include "dr_api.h"
-//
-// #include "drmgr.h"
-// #include "drreg.h"
-// #include "drutil.h"
-// #include "drvector.h"
-// #include "drx.h"
-
-#include "/opt/dynamorio/include/dr_api.h"
-
-#include "/opt/dynamorio/ext/include/drmgr.h"
-#include "/opt/dynamorio/ext/include/drreg.h"
-#include "/opt/dynamorio/ext/include/drutil.h"
-#include "/opt/dynamorio/ext/include/drvector.h"
-#include "/opt/dynamorio/ext/include/drx.h"
+#include "dr_api.h"
+#include "drmgr.h"
+#include "drreg.h"
+#include "drutil.h"
+#include "drvector.h"
+#include "drx.h"
 
 /* Each mem_ref_t includes the type of reference (read or write),
  * the address referenced, and the size of the reference.
@@ -48,6 +36,7 @@ _Static_assert(_Alignof(mem_ref_t) == 32, "mem_ref_t must be 32-byte aligned");
  */
 #define MEM_BUF_SIZE (sizeof(mem_ref_t) * MAX_NUM_MEM_REFS)
 
+#define SHM_NAME "/brainium_shm"
 #define SHM_RING_SIZE (1 << 20)
 
 /* thread-private counter */
@@ -74,8 +63,11 @@ typedef struct __attribute__((aligned(128))) {
     mem_ref_t entries[SHM_RING_SIZE];
 } shm_ring_t;
 
+_Static_assert(sizeof(shm_ring_t) % 128 == 0, "shm_ring_t size should be cache-line aligned");
+_Static_assert(offsetof(shm_ring_t, entries) % 32 == 0,
+               "shm_ring_t.entries must be 32-byte aligned");
+
 static size_t page_size;
-static client_id_t client_id;
 static app_pc code_cache;
 static int tls_index;
 static shm_ring_t *ring;
@@ -95,27 +87,28 @@ static void memtrace(void *drcontext);
 static void code_cache_init(void);
 static void code_cache_exit(void);
 static void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc,
-                           instr_t *memref_instr, int pos, bool write);
+                           instr_t *memref_instr, uint pos, bool write);
 static void shm_init(void);
 static void shm_exit(void);
 
 DR_EXPORT void
 dr_client_main(client_id_t id, int argc, const char *argv[])
 {
-    /* We need 2 reg slots beyond drreg's eflags slots => 3 slots */
-    drreg_options_t ops = {sizeof(ops), 3, false};
+    drreg_options_t ops = {
+        .struct_size = sizeof(ops),
+        /* We need 2 reg slots beyond drreg's eflags slots => 3 slots */
+        .num_spill_slots = 3,
+    };
     /* Specify priority relative to other instrumentation operations: */
-    drmgr_priority_t priority = {sizeof(priority), /* size of struct */
-                                 "brainium",       /* name of our operation */
-                                 NULL, /* optional name of operation we should precede */
-                                 NULL, /* optional name of operation we should follow */
-                                 0};   /* numeric priority */
+    drmgr_priority_t priority = {
+        .struct_size = sizeof(priority),
+        .name = "brainium",
+    };
     dr_set_client_name("Brainium Client", "https://github.com/chip44/brainium/issues");
     page_size = dr_page_size();
     drmgr_init();
     drutil_init();
-    client_id = id;
-    dr_register_exit_event(event_exit);
+    drmgr_register_exit_event(event_exit);
     if (!drmgr_register_thread_init_event(event_thread_init) ||
         !drmgr_register_thread_exit_event(event_thread_exit) ||
         !drmgr_register_bb_app2app_event(event_bb_app2app, &priority) ||
@@ -135,7 +128,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
 }
 
 static void
-event_exit()
+event_exit(void)
 {
     code_cache_exit();
     shm_exit();
@@ -211,7 +204,7 @@ static dr_emit_flags_t
 event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *where, bool for_trace,
                 bool translating, void *user_data)
 {
-    int i = 0;
+    uint i = 0;
     instru_data_t *data = (instru_data_t *)user_data;
     /* Use the drmgr_orig_app_instr_* interface to properly handle our own use
      * of drutil_expand_rep_string() and drx_expand_scatter_gather() (as well
@@ -236,7 +229,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *where, boo
     DR_ASSERT(last_pc != NULL);
 
     if (instr_reads_memory(instr_operands)) {
-        for (i = 0; i < instr_num_srcs(instr_operands); i++) {
+        for (i = 0; i < (uint)instr_num_srcs(instr_operands); i++) {
             if (opnd_is_memory_reference(instr_get_src(instr_operands, i))) {
                 instrument_mem(drcontext, bb, where, last_pc, instr_operands, i, false);
             }
@@ -244,7 +237,7 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *where, boo
     }
 
     if (instr_writes_memory(instr_operands)) {
-        for (i = 0; i < instr_num_dsts(instr_operands); i++) {
+        for (i = 0; i < (uint)instr_num_dsts(instr_operands); i++) {
             if (opnd_is_memory_reference(instr_get_dst(instr_operands, i))) {
                 instrument_mem(drcontext, bb, where, last_pc, instr_operands, i, true);
             }
@@ -346,7 +339,7 @@ code_cache_exit(void)
  */
 static void
 instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc,
-               instr_t *memref_instr, int pos, bool write)
+               instr_t *memref_instr, uint pos, bool write)
 {
     instr_t *instr = NULL;
     instr_t *call = NULL;
@@ -490,12 +483,20 @@ instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc,
 static void
 shm_init(void)
 {
-    int fd = shm_open("/brainium_shm", O_CREAT | O_RDWR, 0666);
-    ftruncate(fd, sizeof(shm_ring_t));
+    int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    DR_ASSERT(fd >= 0);
+
+    if (ftruncate(fd, sizeof(shm_ring_t)) != 0) {
+        DR_ASSERT(false);
+        close(fd);
+        return;
+    }
 
     ring = mmap(NULL, sizeof(shm_ring_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
     close(fd);
+
+    DR_ASSERT(ring != MAP_FAILED);
 
     memset(ring, 0, sizeof(*ring));
 }
@@ -504,8 +505,11 @@ static void
 shm_exit(void)
 {
     if (ring) {
+        uint64_t w = atomic_load_explicit(&ring->write_idx, memory_order_relaxed);
+        uint64_t r = atomic_load_explicit(&ring->read_idx, memory_order_acquire);
+        printf("writes=%lu reads=%lu\n", w, r);
         munmap(ring, sizeof(shm_ring_t));
         ring = NULL;
     }
-    shm_unlink("/brainium_shm");
+    shm_unlink(SHM_NAME);
 }
