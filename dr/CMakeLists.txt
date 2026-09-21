@@ -4,7 +4,7 @@ project(brainium)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_EXTENSIONS OFF)
 
-add_compile_definitions(_POSIX_C_SOURCE=200112L)
+add_compile_definitions(_POSIX_C_SOURCE=200112L _GNU_SOURCE)
 
 find_package(DynamoRIO REQUIRED)
 
@@ -13,7 +13,8 @@ find_package(DynamoRIO REQUIRED)
 add_executable(launcher launcher.c shm.c)
 
 set_target_properties(launcher PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
 
 configure_DynamoRIO_standalone(launcher)
 
