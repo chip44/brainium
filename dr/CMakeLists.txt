@@ -10,7 +10,7 @@ find_package(DynamoRIO REQUIRED)
 
 # launcher
 
-add_executable(launcher launcher.c)
+add_executable(launcher launcher.c shm.c)
 
 set_target_properties(launcher PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -25,7 +25,7 @@ target_link_libraries(
 
 # client
 
-add_library(client SHARED client.c)
+add_library(client SHARED client.c shm.c)
 
 configure_DynamoRIO_client(client)
 

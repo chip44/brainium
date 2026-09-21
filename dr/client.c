@@ -16,18 +16,7 @@
 #include "drvector.h"
 #include "drx.h"
 
-/* Each mem_ref_t includes the type of reference (read or write),
- * the address referenced, and the size of the reference.
- */
-typedef struct __attribute__((aligned(32))) {
-    bool write;
-    void *addr;
-    size_t size;
-    app_pc pc;
-} mem_ref_t;
-
-_Static_assert(sizeof(mem_ref_t) == 32, "mem_ref_t must be 32 bytes");
-_Static_assert(_Alignof(mem_ref_t) == 32, "mem_ref_t must be 32-byte aligned");
+#include "shm.h"
 
 /* Max number of mem_ref a buffer can have */
 #define MAX_NUM_MEM_REFS (1 << 13)
@@ -35,9 +24,6 @@ _Static_assert(_Alignof(mem_ref_t) == 32, "mem_ref_t must be 32-byte aligned");
  * we dump data from the buffer to shm.
  */
 #define MEM_BUF_SIZE (sizeof(mem_ref_t) * MAX_NUM_MEM_REFS)
-
-#define SHM_NAME "/brainium_shm"
-#define SHM_RING_SIZE (1 << 20)
 
 /* thread-private counter */
 typedef struct __attribute__((aligned(64))) {
@@ -53,19 +39,6 @@ typedef struct __attribute__((aligned(64))) {
 typedef struct {
     app_pc last_pc;
 } instru_data_t;
-
-/* shared memory ring buffer */
-typedef struct __attribute__((aligned(128))) {
-    _Atomic uint64_t write_idx;
-    _Atomic uint64_t read_idx;
-    _Atomic uint64_t dropped;
-    uint64_t _pad;
-    mem_ref_t entries[SHM_RING_SIZE];
-} shm_ring_t;
-
-_Static_assert(sizeof(shm_ring_t) % 128 == 0, "shm_ring_t size should be cache-line aligned");
-_Static_assert(offsetof(shm_ring_t, entries) % 32 == 0,
-               "shm_ring_t.entries must be 32-byte aligned");
 
 static size_t page_size;
 static app_pc code_cache;
@@ -88,8 +61,6 @@ static void code_cache_init(void);
 static void code_cache_exit(void);
 static void instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc,
                            instr_t *memref_instr, uint pos, bool write);
-static void shm_init(void);
-static void shm_exit(void);
 
 DR_EXPORT void
 dr_client_main(client_id_t id, int argc, const char *argv[])
@@ -121,7 +92,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     tls_index = drmgr_register_tls_field();
     DR_ASSERT(tls_index != -1);
 
-    shm_init();
+    ring = shm_init();
     code_cache_init();
     /* make it easy to tell, by looking at log file, which client executed */
     dr_log(NULL, DR_LOG_ALL, 1, "Brainium client initializing\n");
@@ -131,7 +102,7 @@ static void
 event_exit(void)
 {
     code_cache_exit();
-    shm_exit();
+    shm_exit(&ring);
 
     if (!drmgr_unregister_tls_field(tls_index) ||
         !drmgr_unregister_thread_init_event(event_thread_init) ||
@@ -478,38 +449,4 @@ instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, app_pc pc,
         drreg_unreserve_register(drcontext, ilist, where, reg2) != DRREG_SUCCESS) {
         DR_ASSERT(false);
     }
-}
-
-static void
-shm_init(void)
-{
-    int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
-    DR_ASSERT(fd >= 0);
-
-    if (ftruncate(fd, sizeof(shm_ring_t)) != 0) {
-        DR_ASSERT(false);
-        close(fd);
-        return;
-    }
-
-    ring = mmap(NULL, sizeof(shm_ring_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-
-    close(fd);
-
-    DR_ASSERT(ring != MAP_FAILED);
-
-    memset(ring, 0, sizeof(*ring));
-}
-
-static void
-shm_exit(void)
-{
-    if (ring) {
-        uint64_t w = atomic_load_explicit(&ring->write_idx, memory_order_relaxed);
-        uint64_t r = atomic_load_explicit(&ring->read_idx, memory_order_acquire);
-        printf("writes=%lu reads=%lu\n", w, r);
-        munmap(ring, sizeof(shm_ring_t));
-        ring = NULL;
-    }
-    shm_unlink(SHM_NAME);
 }
