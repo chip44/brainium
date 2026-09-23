@@ -11,6 +11,9 @@
 #include "dr_config.h"
 #include "dr_inject.h"
 
+#include "ring.h"
+#include "shm.h"
+
 #define STATUS_MSG(x) ((x) ? "success" : "failure")
 
 struct find_dr_lib_data {
@@ -21,6 +24,8 @@ struct find_dr_lib_data {
 static int
 find_dr_lib_cb(struct dl_phdr_info *info, size_t size, void *data)
 {
+    (void)size;
+
     struct find_dr_lib_data *d = data;
 
     if (info->dlpi_name != NULL && strstr(info->dlpi_name, "libdynamorio.so") != NULL) {
@@ -119,6 +124,8 @@ main(int argc, char *argv[])
         goto cleanup;
     }
 
+    ring_buf_t *ring_shm = shm_init(true);
+
     success = dr_inject_process_run(inject_data);
     fprintf(stderr, "dr_inject_process_run: %s\n", STATUS_MSG(success));
     if (!success) {
@@ -135,6 +142,8 @@ cleanup:
         status = dr_unregister_process(app_name, pid, false, DR_PLATFORM_DEFAULT);
         fprintf(stderr, "dr_unregister_process: %s\n", dr_config_status_code_to_string(status));
     }
+
+    shm_exit(&ring_shm);
 
     return exitcode;
 }
