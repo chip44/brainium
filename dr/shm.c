@@ -2,47 +2,58 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 #include "dr_api.h"
 
+#include "ring.h"
 #include "shm.h"
 
-shm_ring_t *
-shm_init(void)
+ring_buf_t *
+shm_init(bool init)
 {
-    int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
-    DR_ASSERT(fd >= 0);
-
-    if (ftruncate(fd, sizeof(shm_ring_t)) != 0) {
+    // create and open shm descriptor
+    int flags = init ? (O_RDWR | O_CREAT | O_EXCL) : O_RDWR;
+    int fd = shm_open(SHM_NAME, flags, 0666);
+    if (fd == -1) {
         DR_ASSERT(false);
-        close(fd);
         return NULL;
     }
 
-    shm_ring_t *ring = mmap(NULL, sizeof(shm_ring_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (init) {
+        // set size of shm
+        if (ftruncate(fd, sizeof(ring_buf_t)) == -1) {
+            DR_ASSERT(false);
+            close(fd);
+            return NULL;
+        }
+    }
+
+    // map shm descriptor to memory
+    ring_buf_t *ring = mmap(NULL, sizeof(ring_buf_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
     close(fd);
 
-    DR_ASSERT(ring != MAP_FAILED);
+    if (ring == MAP_FAILED) {
+        DR_ASSERT(false);
+        return NULL;
+    }
 
-    memset(ring, 0, sizeof(*ring));
+    if (init) {
+        ring_init(ring);
+    }
 
     return ring;
 }
 
 void
-shm_exit(shm_ring_t **ring)
+shm_exit(ring_buf_t **ring)
 {
     if (*ring) {
-        uint64_t w = atomic_load_explicit(&(*ring)->write_idx, memory_order_relaxed);
-        uint64_t r = atomic_load_explicit(&(*ring)->read_idx, memory_order_acquire);
-        printf("writes=%lu reads=%lu\n", w, r);
-        munmap(*ring, sizeof(shm_ring_t));
+        munmap(*ring, sizeof(ring_buf_t));
         *ring = NULL;
     }
+
     shm_unlink(SHM_NAME);
 }

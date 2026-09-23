@@ -1,16 +1,33 @@
 cmake_minimum_required(VERSION 3.14)
 project(brainium)
 
-set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-add_compile_definitions(_POSIX_C_SOURCE=200112L _GNU_SOURCE)
+add_compile_options(
+    -Wall
+    -Wextra
+    -Wconversion
+    -Wshadow
+    -Wstrict-prototypes
+    -Wmissing-prototypes
+    -Wold-style-definition
+)
+
+add_compile_definitions(
+    _GNU_SOURCE
+)
 
 find_package(DynamoRIO REQUIRED)
 
 # launcher
 
-add_executable(launcher launcher.c shm.c)
+add_executable(launcher
+    launcher.c
+    ring.c
+    shm.c
+)
 
 set_target_properties(launcher PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
@@ -18,15 +35,18 @@ set_target_properties(launcher PROPERTIES
 
 configure_DynamoRIO_standalone(launcher)
 
-target_link_libraries(
-    launcher
+target_link_libraries(launcher
     drinjectlib
     drconfiglib
 )
 
 # client
 
-add_library(client SHARED client.c shm.c)
+add_library(client SHARED
+    client.c
+    ring.c
+    shm.c
+)
 
 configure_DynamoRIO_client(client)
 
