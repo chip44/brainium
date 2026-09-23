@@ -53,9 +53,4 @@ _Static_assert(offsetof(ring_buf_t, buffer) % 32 == 0, "shm_ring_t.buffer must b
 _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2, "atomic uint64 implementation should be lock-free");
 
 bool ring_init(ring_buf_t *ring);
-
-bool ring_try_push(ring_buf_t *ring, const mem_ref_t *entry);
-void ring_push(ring_buf_t *ring, const mem_ref_t *entry);
 void ring_push_bulk(ring_buf_t *ring, const mem_ref_t *entries, size_t count);
-
-bool ring_try_pop(ring_buf_t *ring, mem_ref_t *out);
