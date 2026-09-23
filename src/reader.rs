@@ -4,26 +4,15 @@ use color_eyre::{
 };
 use shared_memory::{Shmem, ShmemConf};
 use std::{
+    ffi::c_void,
     fs::File,
     io::{BufRead, BufReader},
     mem::ManuallyDrop,
-    sync::atomic::{AtomicU64, Ordering},
 };
 
+use crate::ring::{MemRef, RingBuf};
+
 const CHUNK_SIZE: usize = 1000;
-
-#[repr(C, align(32))]
-#[derive(Debug, Clone)]
-pub struct MemEvent {
-    pub is_write: bool,
-    _pad: [u8; 7],
-    pub data_addr: u64,
-    pub data_size: u64,
-    pub instr_addr: u64,
-}
-
-const _: () = assert!(std::mem::size_of::<MemEvent>() == 32);
-const _: () = assert!(std::mem::align_of::<MemEvent>() == 32);
 
 pub trait DataSource {
     /// Try to get the next chunk.
@@ -31,7 +20,7 @@ pub trait DataSource {
     /// - Ok(Some(chunk)): new data available
     /// - Ok(None): no data
     /// - Err(e): error
-    fn poll_chunk(&mut self) -> Result<Option<Vec<MemEvent>>>;
+    fn poll_chunk(&mut self) -> Result<Option<Vec<MemRef>>>;
 }
 
 pub struct FileSource {
@@ -45,28 +34,22 @@ impl FileSource {
         Ok(Self { reader })
     }
 
-    fn process_line(line: &str) -> Result<MemEvent> {
+    fn process_line(line: &str) -> Result<MemRef> {
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() != 4 {
             bail!("invalid format");
         }
-        let instr_addr = u64::from_str_radix(parts[0].trim_start_matches("0x"), 16)?;
-        let data_size = parts[2].trim().parse()?;
-        let data_addr = u64::from_str_radix(parts[3].trim_start_matches("0x"), 16)?;
-        let is_write = parts[1].trim().chars().next().unwrap_or('r') != 'r';
 
-        Ok(MemEvent {
-            is_write,
-            _pad: [0; 7],
-            data_addr,
-            data_size,
-            instr_addr,
-        })
+        let write = parts[1].trim().chars().next().unwrap_or('r') != 'r';
+        let size = parts[2].trim().parse()?;
+        let addr = u64::from_str_radix(parts[3].trim_start_matches("0x"), 16)? as *mut c_void;
+
+        Ok(MemRef { write, addr, size })
     }
 }
 
 impl DataSource for FileSource {
-    fn poll_chunk(&mut self) -> Result<Option<Vec<MemEvent>>> {
+    fn poll_chunk(&mut self) -> Result<Option<Vec<MemRef>>> {
         let mut events = Vec::new();
         let mut line = String::new();
 
@@ -88,109 +71,53 @@ impl DataSource for FileSource {
 }
 
 const SHM_NAME: &str = "brainium_shm";
-const SHM_RING_SIZE: usize = 1 << 20;
-
-#[repr(C, align(128))]
-struct Ring {
-    write_idx: AtomicU64,
-    read_idx: AtomicU64,
-    dropped: AtomicU64,
-    _pad: u64,
-    entries: [MemEvent; SHM_RING_SIZE],
-}
 
 pub struct RingSource {
-    ring_ptr: *mut Ring,
     shm: ManuallyDrop<Shmem>,
-    last_dropped: u64,
+    ring_ptr: *mut RingBuf,
 }
 
 impl RingSource {
     pub fn new() -> Result<Self> {
         let shm = ShmemConf::new()
             .os_id(SHM_NAME)
-            .size(std::mem::size_of::<Ring>())
+            .size(std::mem::size_of::<RingBuf>())
             .open()
-            .context("Failed to open shared memory. Is the producer running?")?;
+            .context("failed to open shared memory. is the producer running?")?;
 
         // validate size
-        if shm.len() < std::mem::size_of::<Ring>() {
+        if shm.len() < std::mem::size_of::<RingBuf>() {
             bail!(
-                "Shared memory size mismatch: expected {}, got {}",
-                std::mem::size_of::<Ring>(),
+                "shared memory size mismatch: expected {}, got {}",
+                std::mem::size_of::<RingBuf>(),
                 shm.len()
             );
         }
 
-        let ring_ptr = shm.as_ptr().cast::<Ring>();
+        let ring_ptr = shm.as_ptr().cast::<RingBuf>();
 
         Ok(Self {
-            ring_ptr,
             shm: ManuallyDrop::new(shm),
-            last_dropped: 0,
+            ring_ptr,
         })
     }
 
-    fn ring(&self) -> &Ring {
-        // SAFETY: ring_ptr is valid for the lifetime of _shm
-        unsafe { &*self.ring_ptr }
+    fn ring(&self) -> &mut RingBuf {
+        // SAFETY: ring_ptr is valid for the lifetime of shm
+        unsafe { &mut *self.ring_ptr }
     }
 }
 
 impl Drop for RingSource {
     fn drop(&mut self) {
         // SAFETY: we need to manually drop the Shmem
-        unsafe {
-            ManuallyDrop::drop(&mut self.shm);
-        }
+        unsafe { ManuallyDrop::drop(&mut self.shm) }
     }
 }
 
 impl DataSource for RingSource {
-    fn poll_chunk(&mut self) -> Result<Option<Vec<MemEvent>>> {
-        let dropped = {
-            let ring = self.ring();
-            ring.dropped.load(Ordering::Relaxed)
-        };
-        if dropped != self.last_dropped {
-            eprintln!(
-                "ring buffer overflow: writer dropped {} events since last poll",
-                dropped.wrapping_sub(self.last_dropped)
-            );
-            self.last_dropped = dropped;
-        }
-
-        let ring = self.ring();
-
-        let write_idx = ring.write_idx.load(Ordering::Acquire);
-        let read_idx = ring.read_idx.load(Ordering::Relaxed);
-
-        if read_idx == write_idx {
-            return Ok(None);
-        }
-
-        let mut available = write_idx.wrapping_sub(read_idx);
-        if available as usize > SHM_RING_SIZE {
-            // writer lapped us completely, some of this range is already gone.
-            // dropped counter above should reflect this, just clamp so we don't
-            // re-read stale/overwritten slots.
-            available = SHM_RING_SIZE as u64;
-        }
-
-        let to_read = available.min(CHUNK_SIZE as u64);
-        let mut events = Vec::with_capacity(to_read as usize);
-
-        for i in 0..to_read {
-            let idx = ((read_idx.wrapping_add(i)) as usize) & (SHM_RING_SIZE - 1);
-            // SAFETY: slot is within bounds; write_idx (Acquire load above)
-            // guarantees the writer's data for this slot is visible.
-            let event = unsafe { std::ptr::read_volatile(&ring.entries[idx]) };
-            events.push(event);
-        }
-
-        ring.read_idx
-            .store(read_idx.wrapping_add(to_read), Ordering::Release);
-
+    fn poll_chunk(&mut self) -> Result<Option<Vec<MemRef>>> {
+        let events = self.ring().pop_bulk(CHUNK_SIZE);
         Ok((!events.is_empty()).then_some(events))
     }
 }

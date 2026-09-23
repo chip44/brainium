@@ -1,7 +1,7 @@
 use fast_hilbert::h2xy;
 use std::collections::HashMap;
 
-use crate::reader::{DataSource, MemEvent};
+use crate::{reader::DataSource, ring::MemRef};
 use color_eyre::Result;
 
 const HILBERT_ORDER: u8 = 9;
@@ -86,10 +86,10 @@ impl Visualizer {
         )
     }
 
-    fn apply_chunk(&mut self, chunk: Vec<MemEvent>) {
+    fn apply_chunk(&mut self, chunk: Vec<MemRef>) {
         for event in chunk {
-            let (x, y) = addr_to_coords(event.data_addr);
-            self.heatmap.add_access(x, y, event.is_write);
+            let (x, y) = addr_to_coords(event.addr as u64);
+            self.heatmap.add_access(x, y, event.write);
         }
     }
 

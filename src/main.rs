@@ -15,6 +15,7 @@ use winit::{
 };
 
 pub mod reader;
+mod ring;
 mod visualizer;
 
 use crate::reader::RingSource;
@@ -140,7 +141,7 @@ fn main() -> Result<(), EventLoopError> {
     // let log_path = &args[1];
     // let source = FileSource::new(log_path).expect("failed to open log file");
 
-    let source = RingSource::new().expect("failed to open shared memory");
+    let source = RingSource::new().expect("failed to init source");
     let visualizer = Visualizer::new(Box::new(source));
 
     let event_loop = EventLoop::new().unwrap();

@@ -38,6 +38,9 @@ typedef struct __attribute__((aligned(64))) {
     mem_ref_t data;       /* published entry, valid to read only once seq says so */
 } ring_cell_t;
 
+_Static_assert(sizeof(ring_cell_t) == 64, "ring_cell_t must be 64 bytes");
+_Static_assert(_Alignof(ring_cell_t) == 64, "ring_cell_t must be 64-byte aligned");
+
 typedef struct __attribute__((aligned(128))) {
     ring_cell_t buffer[RING_SIZE]; /* array of slots */
     _Atomic uint64_t enqueue_pos;  /* write cursor (shared between producers) */
