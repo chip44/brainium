@@ -5,12 +5,12 @@ use crate::{reader::DataSource, ring::MemRef};
 use color_eyre::Result;
 
 const HILBERT_ORDER: u8 = 9;
-pub const GRID_SIZE: u32 = 1 << HILBERT_ORDER; // 1024
+pub const GRID_SIZE: u32 = 1 << HILBERT_ORDER;
+const GRID_MASK: u64 = ((GRID_SIZE as u64) << 1) - 1;
 const DECAY_FACTOR: f32 = 0.97;
 
 fn addr_to_coords(addr: u64) -> (u32, u32) {
-    let max_index = (1u64 << (2 * HILBERT_ORDER)) - 1;
-    let index = addr & max_index;
+    let index = addr & GRID_MASK;
     h2xy(index, HILBERT_ORDER)
 }
 
@@ -18,6 +18,7 @@ const fn coords_to_grid(x: u32, y: u32) -> usize {
     ((y as usize) * (GRID_SIZE as usize) + (x as usize)) * 4
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn heat_to_color(heat: f32) -> [u8; 4] {
     let heat = heat.clamp(0.0, 1.0);
 
@@ -93,6 +94,7 @@ impl Visualizer {
         }
     }
 
+    #[allow(clippy::indexing_slicing)]
     pub fn render(&mut self, frame: &mut [u8]) {
         // clear screen
         for pixel in frame.as_chunks_mut::<4>().0 {

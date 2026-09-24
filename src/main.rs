@@ -1,4 +1,5 @@
 use color_eyre::Result;
+use color_eyre::eyre::{Error, OptionExt};
 use pixels::{Pixels, SurfaceTexture};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,7 +8,6 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 use winit::{
     application::ApplicationHandler,
-    error::EventLoopError,
     event::WindowEvent,
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
@@ -38,7 +38,7 @@ impl App {
     }
 
     fn draw(&mut self) -> Result<()> {
-        let pixels = self.pixels.as_mut().unwrap();
+        let pixels = self.pixels.as_mut().ok_or_eyre("pixels is uninitialized")?;
         self.visualizer.render(pixels.frame_mut());
         pixels.render()?;
         Ok(())
@@ -49,16 +49,15 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window = {
             let size = LogicalSize::new(GRID_SIZE, GRID_SIZE);
-            Arc::new(
-                event_loop
-                    .create_window(
-                        Window::default_attributes()
-                            .with_title("Brainium")
-                            .with_inner_size(size)
-                            .with_min_inner_size(size),
-                    )
-                    .unwrap(),
-            )
+            let Ok(w) = event_loop.create_window(
+                Window::default_attributes()
+                    .with_title("Brainium")
+                    .with_inner_size(size)
+                    .with_min_inner_size(size),
+            ) else {
+                return;
+            };
+            Arc::new(w)
         };
 
         self.window = Some(window.clone());
@@ -85,8 +84,10 @@ impl ApplicationHandler for App {
 
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame));
 
-        if Instant::now() >= next_frame {
-            self.window.as_ref().unwrap().request_redraw();
+        if Instant::now() >= next_frame
+            && let Some(window) = self.window.as_ref()
+        {
+            window.request_redraw();
         }
     }
 
@@ -122,6 +123,7 @@ impl ApplicationHandler for App {
                     eprintln!("render error: {e}");
                 }
             }
+            #[allow(clippy::single_match)]
             WindowEvent::KeyboardInput { event, .. } => match event.physical_key {
                 PhysicalKey::Code(KeyCode::Escape) => {
                     event_loop.exit();
@@ -133,7 +135,7 @@ impl ApplicationHandler for App {
     }
 }
 
-fn main() -> Result<(), EventLoopError> {
+fn main() -> Result<(), Error> {
     // let args: Vec<_> = std::env::args().collect();
     // if args.len() < 2 {
     //     std::process::exit(1);
@@ -141,10 +143,10 @@ fn main() -> Result<(), EventLoopError> {
     // let log_path = &args[1];
     // let source = FileSource::new(log_path).expect("failed to open log file");
 
-    let source = RingSource::new().expect("failed to init source");
+    let source = RingSource::new()?;
     let visualizer = Visualizer::new(Box::new(source));
 
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + FRAME_DURATION));
 
     let mut app = App {
@@ -154,5 +156,6 @@ fn main() -> Result<(), EventLoopError> {
         last_update: Instant::now(),
     };
 
-    event_loop.run_app(&mut app)
+    event_loop.run_app(&mut app)?;
+    Ok(())
 }

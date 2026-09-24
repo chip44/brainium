@@ -44,6 +44,11 @@ const _: () = {
 };
 
 impl RingBuf {
+    #[allow(
+        clippy::cast_possible_wrap,
+        clippy::cast_possible_truncation,
+        clippy::indexing_slicing
+    )]
     pub fn pop_bulk(&mut self, max_count: usize) -> Vec<MemRef> {
         let mut entries = Vec::with_capacity(max_count);
 

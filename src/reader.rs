@@ -1,7 +1,4 @@
-use color_eyre::{
-    Result,
-    eyre::{Context, bail},
-};
+use color_eyre::{Result, eyre::bail};
 use shared_memory::{Shmem, ShmemConf};
 use std::{
     ffi::c_void,
@@ -20,6 +17,7 @@ pub trait DataSource {
     /// - Ok(Some(chunk)): new data available
     /// - Ok(None): no data
     /// - Err(e): error
+    #[allow(clippy::missing_errors_doc)]
     fn poll_chunk(&mut self) -> Result<Option<Vec<MemRef>>>;
 }
 
@@ -28,12 +26,14 @@ pub struct FileSource {
 }
 
 impl FileSource {
+    #[allow(clippy::missing_errors_doc)]
     pub fn new(path: &str) -> Result<Self> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         Ok(Self { reader })
     }
 
+    #[allow(clippy::indexing_slicing)]
     fn process_line(line: &str) -> Result<MemRef> {
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() != 4 {
@@ -78,23 +78,28 @@ pub struct RingSource {
 }
 
 impl RingSource {
+    #[allow(clippy::missing_errors_doc)]
     pub fn new() -> Result<Self> {
         let shm = ShmemConf::new()
             .os_id(SHM_NAME)
             .size(std::mem::size_of::<RingBuf>())
-            .open()
-            .context("failed to open shared memory. is the producer running?")?;
+            .open()?;
 
         // validate size
         if shm.len() < std::mem::size_of::<RingBuf>() {
             bail!(
-                "shared memory size mismatch: expected {}, got {}",
+                "shm size mismatch: expected {}, got {}",
                 std::mem::size_of::<RingBuf>(),
                 shm.len()
             );
         }
 
-        let ring_ptr = shm.as_ptr().cast::<RingBuf>();
+        let raw_ptr = shm.as_ptr();
+        if !(raw_ptr as usize).is_multiple_of(std::mem::align_of::<RingBuf>()) {
+            bail!("shm is not aligned for RingBuf")
+        }
+        #[allow(clippy::cast_ptr_alignment)]
+        let ring_ptr = raw_ptr.cast::<RingBuf>();
 
         Ok(Self {
             shm: ManuallyDrop::new(shm),
@@ -102,7 +107,7 @@ impl RingSource {
         })
     }
 
-    fn ring(&self) -> &mut RingBuf {
+    fn ring(&mut self) -> &mut RingBuf {
         // SAFETY: ring_ptr is valid for the lifetime of shm
         unsafe { &mut *self.ring_ptr }
     }
