@@ -103,14 +103,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 while Instant::now() >= self.last_update + FRAME_DURATION {
+                    self.last_update = Instant::now();
                     match self.update() {
-                        Ok(true) => {
-                            self.last_update = Instant::now();
-                        }
-                        Ok(false) => {
-                            // eprintln!("EOF");
-                            return;
-                        }
+                        Ok(true | false) => {}
                         Err(e) => {
                             eprintln!("error processing chunk: {e}");
                             event_loop.exit();
