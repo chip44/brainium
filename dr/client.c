@@ -108,7 +108,6 @@ static void
 event_exit(void)
 {
     code_cache_exit();
-    shm_exit(&ring_shm);
 
     if (!drmgr_unregister_tls_field(tls_index) ||
         !drmgr_unregister_thread_init_event(event_thread_init) ||

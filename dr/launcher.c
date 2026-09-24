@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "dr_api.h"
@@ -16,17 +18,17 @@
 
 #define STATUS_MSG(x) ((x) ? "success" : "failure")
 
-struct find_dr_lib_data {
+typedef struct __attribute__((aligned(16))) {
     char *path;
     size_t path_size;
-} __attribute__((aligned(16)));
+} find_dr_lib_data;
 
 static int
 find_dr_lib_cb(struct dl_phdr_info *info, size_t size, void *data)
 {
     (void)size;
 
-    struct find_dr_lib_data *d = data;
+    find_dr_lib_data *d = data;
 
     if (info->dlpi_name != NULL && strstr(info->dlpi_name, "libdynamorio.so") != NULL) {
         if (realpath(info->dlpi_name, d->path) == NULL) {
@@ -43,7 +45,7 @@ dr_override_root(const char *app_name, const int pid)
 {
     char dr_lib_path[PATH_MAX] = {0};
 
-    struct find_dr_lib_data data = {
+    find_dr_lib_data data = {
         .path = dr_lib_path,
         .path_size = sizeof(dr_lib_path),
     };
@@ -67,7 +69,7 @@ dr_override_root(const char *app_name, const int pid)
 int
 main(int argc, char *argv[])
 {
-    if (argc < 3) {
+    if (argc < 4) {
         exit(EXIT_FAILURE);
     }
 
@@ -75,11 +77,13 @@ main(int argc, char *argv[])
     dr_config_status_t status;
     bool success;
     char *client_path = argv[1];
+    char *vis_path = argv[2];
     char app_path[PATH_MAX];
-    snprintf(app_path, sizeof(app_path), "%s", argv[2]);
+    snprintf(app_path, sizeof(app_path), "%s", argv[3]);
     const char *app_name = basename(app_path);
-    const char **app_argv = (const char **)&argv[2];
+    const char **app_argv = (const char **)&argv[3];
     process_id_t pid = -1;
+    pid_t vis_pid = -1;
 
     char config_dir[MAXIMUM_PATH];
     status = dr_get_config_dir(false, true, config_dir, sizeof(config_dir));
@@ -125,6 +129,26 @@ main(int argc, char *argv[])
     }
 
     ring_buf_t *ring_shm = shm_init(true);
+    success = ring_shm != NULL;
+    fprintf(stderr, "shm_init: %s\n", STATUS_MSG(success));
+    if (!success) {
+        goto cleanup;
+    }
+
+    vis_pid = fork();
+    if (vis_pid == -1) {
+        perror("fork");
+        goto cleanup;
+    }
+    if (vis_pid == 0) {
+        // close all fds except stdin/stdout/stderr to avoid holding DR's internal pipes open
+        close_range(3, ~0U, 0);
+        fprintf(stderr, "execlp: %s\n", vis_path);
+        execlp(vis_path, vis_path, NULL);
+        // only reached if execlp failed
+        perror("execlp");
+        exit(EXIT_FAILURE);
+    }
 
     success = dr_inject_process_run(inject_data);
     fprintf(stderr, "dr_inject_process_run: %s\n", STATUS_MSG(success));
@@ -141,6 +165,14 @@ cleanup:
     if (pid != -1) {
         status = dr_unregister_process(app_name, pid, false, DR_PLATFORM_DEFAULT);
         fprintf(stderr, "dr_unregister_process: %s\n", dr_config_status_code_to_string(status));
+    }
+
+    if (vis_pid != -1) {
+        int vis_status;
+        if (waitpid(vis_pid, &vis_status, 0) == -1) {
+            perror("waitpid");
+        }
+        fprintf(stderr, "waitpid: %d\n", vis_status);
     }
 
     shm_exit(&ring_shm);
