@@ -22,7 +22,7 @@
 /*
  * max number of mem_ref_t a buffer can have
  */
-#define MAX_NUM_MEM_REFS (1 << 13)
+#define MAX_NUM_MEM_REFS (1 << 10)
 
 /*
  * the size of memory buffer for holding mem_ref_t's.
