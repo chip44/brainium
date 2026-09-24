@@ -9,7 +9,7 @@ use std::{
 
 use crate::ring::{MemRef, RingBuf};
 
-const CHUNK_SIZE: usize = 1000;
+const CHUNK_SIZE: usize = 1 << 13;
 
 pub trait DataSource {
     /// Try to get the next chunk.
