@@ -70,7 +70,7 @@ impl DataSource for FileSource {
     }
 }
 
-const SHM_NAME: &str = "brainium_shm";
+const SHM_NAME: &str = "/brainium_shm";
 
 pub struct RingSource {
     shm: ManuallyDrop<Shmem>,
