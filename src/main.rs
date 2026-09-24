@@ -131,13 +131,6 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<(), Error> {
-    // let args: Vec<_> = std::env::args().collect();
-    // if args.len() < 2 {
-    //     std::process::exit(1);
-    // }
-    // let log_path = &args[1];
-    // let source = FileSource::new(log_path).expect("failed to open log file");
-
     let source = RingSource::new()?;
     let visualizer = Visualizer::new(Box::new(source));
 
