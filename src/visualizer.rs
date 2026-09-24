@@ -6,7 +6,7 @@ use color_eyre::Result;
 
 const HILBERT_ORDER: u8 = 9;
 pub const GRID_SIZE: u32 = 1 << HILBERT_ORDER;
-const GRID_MASK: u64 = ((GRID_SIZE as u64) << 1) - 1;
+const GRID_MASK: u64 = (1u64 << (2 * HILBERT_ORDER)) - 1;
 const DECAY_FACTOR: f32 = 0.97;
 
 fn addr_to_coords(addr: u64) -> (u32, u32) {
