@@ -50,8 +50,8 @@ add_library(client SHARED
 
 configure_DynamoRIO_client(client)
 
-use_DynamoRIO_extension(client drmgr)
-use_DynamoRIO_extension(client drreg)
-use_DynamoRIO_extension(client drutil)
-use_DynamoRIO_extension(client drx)
+use_DynamoRIO_extension(client drmgr_static)
+use_DynamoRIO_extension(client drreg_static)
+use_DynamoRIO_extension(client drutil_static)
+use_DynamoRIO_extension(client drx_static)
 
