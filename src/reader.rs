@@ -12,13 +12,8 @@ use crate::ring::{MemRef, RingBuf};
 const CHUNK_SIZE: usize = 1 << 13;
 
 pub trait DataSource {
-    /// Try to get the next chunk.
-    ///
-    /// - Ok(Some(chunk)): new data available
-    /// - Ok(None): no data
-    /// - Err(e): error
-    #[allow(clippy::missing_errors_doc)]
-    fn poll_chunk(&mut self) -> Result<Option<Vec<MemRef>>>;
+    /// try to get the next chunk
+    fn poll_chunk(&mut self) -> Vec<MemRef>;
 }
 
 pub struct FileSource {
@@ -49,24 +44,27 @@ impl FileSource {
 }
 
 impl DataSource for FileSource {
-    fn poll_chunk(&mut self) -> Result<Option<Vec<MemRef>>> {
-        let mut events = Vec::new();
+    fn poll_chunk(&mut self) -> Vec<MemRef> {
+        let mut entries = Vec::with_capacity(CHUNK_SIZE);
         let mut line = String::new();
 
         for _ in 0..CHUNK_SIZE {
             line.clear();
-            let bytes_read = self.reader.read_line(&mut line)?;
-            if bytes_read == 0 {
-                break;
-            }
-
-            match Self::process_line(line.trim()) {
-                Ok(event) => events.push(event),
-                Err(e) => eprintln!("failed processing line '{}': {}", line.trim(), e),
+            match self.reader.read_line(&mut line) {
+                Ok(bytes_read) => {
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    match Self::process_line(line.trim()) {
+                        Ok(entry) => entries.push(entry),
+                        Err(e) => eprintln!("failed processing line '{}': {}", line.trim(), e),
+                    }
+                }
+                Err(e) => eprintln!("failed reading line: {e}"),
             }
         }
 
-        Ok((!events.is_empty()).then_some(events))
+        entries
     }
 }
 
@@ -121,8 +119,7 @@ impl Drop for RingSource {
 }
 
 impl DataSource for RingSource {
-    fn poll_chunk(&mut self) -> Result<Option<Vec<MemRef>>> {
-        let events = self.ring().pop_bulk(CHUNK_SIZE);
-        Ok((!events.is_empty()).then_some(events))
+    fn poll_chunk(&mut self) -> Vec<MemRef> {
+        self.ring().pop_bulk(CHUNK_SIZE)
     }
 }

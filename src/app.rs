@@ -102,14 +102,8 @@ impl eframe::App for App {
 
         self.last_update += FRAME_TIME;
 
-        match self.visualizer.process_chunk() {
-            Ok(true | false) => {
-                self.visualizer.render(&mut self.framebuffer, dt);
-            }
-            Err(e) => {
-                eprintln!("error processing chunk: {e}");
-            }
-        }
+        self.visualizer.process_chunk();
+        self.visualizer.render(&mut self.framebuffer, dt);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
