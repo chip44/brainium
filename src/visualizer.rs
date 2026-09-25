@@ -1,13 +1,12 @@
 use fast_hilbert::h2xy;
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use crate::{reader::DataSource, ring::MemRef};
 use color_eyre::Result;
 
-const HILBERT_ORDER: u8 = 9;
-pub const GRID_SIZE: u32 = 1 << HILBERT_ORDER;
+const HILBERT_ORDER: u8 = 10;
+pub const GRID_SIZE: usize = 1 << HILBERT_ORDER;
 const GRID_MASK: u64 = (1u64 << (2 * HILBERT_ORDER)) - 1;
-const DECAY_FACTOR: f32 = 0.97;
 
 fn addr_to_coords(addr: u64) -> (u32, u32) {
     let index = addr & GRID_MASK;
@@ -15,7 +14,7 @@ fn addr_to_coords(addr: u64) -> (u32, u32) {
 }
 
 const fn coords_to_grid(x: u32, y: u32) -> usize {
-    ((y as usize) * (GRID_SIZE as usize) + (x as usize)) * 4
+    ((y as usize) * GRID_SIZE + (x as usize)) * 4
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -41,14 +40,14 @@ fn heat_to_color(heat: f32) -> [u8; 4] {
 
 struct HeatMap {
     data: HashMap<(u32, u32), f32>,
-    decay_factor: f32,
+    half_life: Duration,
 }
 
 impl HeatMap {
-    fn new(decay_factor: f32) -> Self {
+    fn new(half_life: Duration) -> Self {
         Self {
             data: HashMap::new(),
-            decay_factor,
+            half_life,
         }
     }
 
@@ -56,9 +55,10 @@ impl HeatMap {
         self.data.insert((x, y), 1.0);
     }
 
-    fn decay(&mut self) {
+    fn decay(&mut self, dt: Duration) {
+        let factor = 0.5_f32.powf(dt.as_secs_f32() / self.half_life.as_secs_f32());
         self.data.retain(|_, heat| {
-            *heat *= self.decay_factor;
+            *heat *= factor;
             *heat > 0.01
         });
     }
@@ -73,7 +73,7 @@ impl Visualizer {
     pub fn new(source: Box<dyn DataSource>) -> Self {
         Self {
             source,
-            heatmap: HeatMap::new(DECAY_FACTOR),
+            heatmap: HeatMap::new(Duration::from_secs(2)),
         }
     }
 
@@ -95,10 +95,10 @@ impl Visualizer {
     }
 
     #[allow(clippy::indexing_slicing)]
-    pub fn render(&mut self, frame: &mut [u8]) {
+    pub fn render(&mut self, frame: &mut [u8], dt: Duration) {
         // clear screen
         for pixel in frame.as_chunks_mut::<4>().0 {
-            pixel.copy_from_slice(&[0, 0, 0, 255]);
+            pixel[..3].fill(0);
         }
 
         // draw heatmap
@@ -109,6 +109,6 @@ impl Visualizer {
         }
 
         // update heatmap
-        self.heatmap.decay();
+        self.heatmap.decay(dt);
     }
 }

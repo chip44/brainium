@@ -5,10 +5,9 @@ edition = "2024"
 
 [dependencies]
 color-eyre = "0.6.5"
+eframe = "0.36.2"
 fast_hilbert = "2.1.0"
-pixels = "0.17.2"
 shared_memory = "0.12.4"
-winit = "0.30.13"
 
 [lints.clippy]
 pedantic = { level = "deny", priority = -1 }
