@@ -1,4 +1,5 @@
 use fast_hilbert::h2xy;
+use palette::{Hsl, IntoColor, Srgb};
 use std::{collections::HashMap, time::Duration};
 
 use crate::reader::DataSource;
@@ -16,29 +17,18 @@ const fn coords_to_grid(x: u32, y: u32) -> usize {
     ((y as usize) * GRID_SIZE + (x as usize)) * 4
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn heat_to_color(heat: f32) -> [u8; 3] {
+fn heat_to_color(write: bool, heat: f32) -> [u8; 3] {
     let heat = heat.clamp(0.0, 1.0);
+    let hue = if write { 0.0 } else { 220.0 }; // write=red read=blue
 
-    let (r, g, b) = if heat < 0.33 {
-        // black -> red
-        let t = heat / 0.33;
-        ((255.0 * t) as u8, 0, 0)
-    } else if heat < 0.66 {
-        // red -> yellow
-        let t = (heat - 0.33) / 0.33;
-        (255, (255.0 * t) as u8, 0)
-    } else {
-        // yellow -> white
-        let t = (heat - 0.66) / 0.34;
-        (255, 255, (255.0 * t) as u8)
-    };
+    let hsl = Hsl::new(hue, 1.0, heat);
+    let rgb: Srgb<u8> = Srgb::from_linear(hsl.into_color());
 
-    (r, g, b).into()
+    [rgb.red, rgb.green, rgb.blue]
 }
 
 struct HeatMap {
-    data: HashMap<(u32, u32), f32>,
+    data: HashMap<(u32, u32), (bool, f32)>,
     half_life: Duration,
 }
 
@@ -50,13 +40,13 @@ impl HeatMap {
         }
     }
 
-    fn add_access(&mut self, x: u32, y: u32, _is_write: bool) {
-        self.data.insert((x, y), 1.0);
+    fn add_access(&mut self, x: u32, y: u32, write: bool) {
+        self.data.insert((x, y), (write, 1.0));
     }
 
     fn decay(&mut self, dt: Duration) {
         let factor = 0.5_f32.powf(dt.as_secs_f32() / self.half_life.as_secs_f32());
-        self.data.retain(|_, heat| {
+        self.data.retain(|_, (_, heat)| {
             *heat *= factor;
             *heat > 0.01
         });
@@ -92,9 +82,9 @@ impl Visualizer {
         }
 
         // draw heatmap
-        for ((x, y), heat) in &self.heatmap.data {
+        for ((x, y), (write, heat)) in &self.heatmap.data {
             let idx = coords_to_grid(*x, *y);
-            let color = heat_to_color(*heat);
+            let color = heat_to_color(*write, *heat);
             frame[idx..idx + 3].copy_from_slice(&color);
         }
 
