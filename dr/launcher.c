@@ -85,6 +85,9 @@ main(int argc, char *argv[])
     process_id_t pid = -1;
     pid_t vis_pid = -1;
 
+    // with $HOME set, DR always creates $HOME/.dynamorio...
+    unsetenv("HOME");
+
     char config_dir[MAXIMUM_PATH];
     status = dr_get_config_dir(false, true, config_dir, sizeof(config_dir));
     fprintf(stderr, "dr_get_config_dir: %s\n", dr_config_status_code_to_string(status));
