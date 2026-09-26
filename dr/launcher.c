@@ -153,9 +153,18 @@ dr_setup(char app_path[], const char *app_argv[], char client_path[], void **inj
     dr_config_status_t status;
     bool success;
 
+    // with $HOME set, `dr_get_config_dir` always creates $HOME/.dynamorio...
+    const char *env_home = getenv("HOME");
+    unsetenv("HOME");
+
     char config_dir[MAXIMUM_PATH];
     status = dr_get_config_dir(false, true, config_dir, sizeof(config_dir));
     fprintf(stderr, "dr_get_config_dir: %s\n", dr_config_status_code_to_string(status));
+
+    // reset $HOME (might be required for the injected process)
+    if (env_home) {
+        setenv("HOME", env_home, false);
+    }
 
     int errcode = dr_inject_process_create(app_path, app_argv, inject_data);
     fprintf(stderr, "dr_inject_prepare_to_exec: %s\n", strerror(errcode));
@@ -254,9 +263,6 @@ main(int argc, char *argv[])
     void *inject_data = NULL;
 
     install_signal_handlers();
-
-    // with $HOME set, DR always creates $HOME/.dynamorio...
-    unsetenv("HOME");
 
     app_pid = dr_setup(app_path, app_argv, client_path, &inject_data);
     if (app_pid == -1) {
