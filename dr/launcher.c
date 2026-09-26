@@ -226,18 +226,10 @@ dr_run(void **inject_data)
  * stop and unregister the injected process
  */
 static int
-dr_cleanup(char app_path[], const process_id_t app_pid, void **inject_data)
+dr_cleanup(void **inject_data)
 {
-    const char *app_name = basename(app_path);
-
     int exitcode = dr_inject_process_exit(*inject_data, true);
     fprintf(stderr, "dr_inject_process_exit: %d\n", exitcode);
-
-    if (app_pid != -1) {
-        dr_config_status_t status =
-            dr_unregister_process(app_name, app_pid, false, DR_PLATFORM_DEFAULT);
-        fprintf(stderr, "dr_unregister_process: %s\n", dr_config_status_code_to_string(status));
-    }
 
     return exitcode;
 }
@@ -299,7 +291,7 @@ main(int argc, char *argv[])
     }
 
 cleanup:
-    exitcode = dr_cleanup(app_path, app_pid, &inject_data);
+    exitcode = dr_cleanup(&inject_data);
 
     if (vis_pid != -1) {
         waitpid_graceful(vis_pid);
