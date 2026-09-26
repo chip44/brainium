@@ -11,6 +11,7 @@
 
 #include "dr_api.h"
 #include "dr_config.h"
+#include "dr_defines.h"
 #include "dr_inject.h"
 
 #include "ring.h"
@@ -41,7 +42,7 @@ find_dr_lib_cb(struct dl_phdr_info *info, size_t size, void *data)
 }
 
 static bool
-dr_override_root(const char *app_name, const int pid)
+dr_override_root(const char *app_name, const process_id_t pid)
 {
     char dr_lib_path[PATH_MAX] = {0};
 
@@ -66,52 +67,40 @@ dr_override_root(const char *app_name, const int pid)
     return true;
 }
 
-int
-main(int argc, char *argv[])
+/*
+ * register the process with DR and inject the client into it (without running it)
+ */
+static process_id_t
+dr_setup(char app_path[], const char *app_argv[], char client_path[], void **inject_data)
 {
-    if (argc < 4) {
-        exit(EXIT_FAILURE);
-    }
+    const char *app_name = basename(app_path);
 
-    int exitcode = EXIT_FAILURE;
     dr_config_status_t status;
     bool success;
-    char *client_path = argv[1];
-    char *vis_path = argv[2];
-    char app_path[PATH_MAX];
-    snprintf(app_path, sizeof(app_path), "%s", argv[3]);
-    const char *app_name = basename(app_path);
-    const char **app_argv = (const char **)&argv[3];
-    process_id_t pid = -1;
-    pid_t vis_pid = -1;
-
-    // with $HOME set, DR always creates $HOME/.dynamorio...
-    unsetenv("HOME");
 
     char config_dir[MAXIMUM_PATH];
     status = dr_get_config_dir(false, true, config_dir, sizeof(config_dir));
     fprintf(stderr, "dr_get_config_dir: %s\n", dr_config_status_code_to_string(status));
 
-    void *inject_data = NULL;
-    int errcode = dr_inject_process_create(app_path, app_argv, &inject_data);
+    int errcode = dr_inject_process_create(app_path, app_argv, inject_data);
     fprintf(stderr, "dr_inject_prepare_to_exec: %s\n", strerror(errcode));
     if (errcode != 0) {
-        goto cleanup;
+        return -1;
     }
 
-    pid = dr_inject_get_process_id(inject_data);
+    process_id_t pid = dr_inject_get_process_id(*inject_data);
 
     status = dr_register_process(app_name, pid, false, "", DR_MODE_CODE_MANIPULATION, false,
                                  DR_PLATFORM_DEFAULT, NULL);
     fprintf(stderr, "dr_register_process: %s\n", dr_config_status_code_to_string(status));
     if (status != DR_SUCCESS) {
-        goto cleanup;
+        return -1;
     }
 
     success = dr_override_root(app_name, pid);
     fprintf(stderr, "dr_override_root: %s\n", STATUS_MSG(success));
     if (!success) {
-        goto cleanup;
+        return -1;
     }
 
     dr_config_client_t client_info = {
@@ -122,12 +111,78 @@ main(int argc, char *argv[])
     status = dr_register_client_ex(app_name, pid, false, DR_PLATFORM_DEFAULT, &client_info);
     fprintf(stderr, "dr_register_client_ex: %s\n", dr_config_status_code_to_string(status));
     if (status != DR_SUCCESS) {
-        goto cleanup;
+        return -1;
     }
 
-    success = dr_inject_process_inject(inject_data, false, NULL);
+    success = dr_inject_process_inject(*inject_data, false, NULL);
     fprintf(stderr, "dr_inject_process_inject: %s\n", STATUS_MSG(success));
     if (!success) {
+        return -1;
+    }
+
+    return pid;
+}
+
+/*
+ * run the injected process and wait for it to exit
+ */
+static bool
+dr_run(void **inject_data)
+{
+    bool success = dr_inject_process_run(*inject_data);
+    fprintf(stderr, "dr_inject_process_run: %s\n", STATUS_MSG(success));
+    if (!success) {
+        return false;
+    }
+
+    return dr_inject_wait_for_child(*inject_data, 0);
+}
+
+/*
+ * stop and unregister the injected process
+ */
+static int
+dr_cleanup(char app_path[], const process_id_t pid, void **inject_data)
+{
+    const char *app_name = basename(app_path);
+
+    int exitcode = dr_inject_process_exit(*inject_data, true);
+    fprintf(stderr, "dr_inject_process_exit: %d\n", exitcode);
+
+    if (pid != -1) {
+        dr_config_status_t status =
+            dr_unregister_process(app_name, pid, false, DR_PLATFORM_DEFAULT);
+        fprintf(stderr, "dr_unregister_process: %s\n", dr_config_status_code_to_string(status));
+    }
+
+    return exitcode;
+}
+
+int
+main(int argc, char *argv[])
+{
+    if (argc < 4) {
+        exit(EXIT_FAILURE);
+    }
+
+    int exitcode = EXIT_FAILURE;
+    bool success;
+
+    char *client_path = argv[1];
+    char *vis_path = argv[2];
+    char app_path[PATH_MAX];
+    snprintf(app_path, sizeof(app_path), "%s", argv[3]);
+    const char **app_argv = (const char **)&argv[3];
+
+    process_id_t pid = -1;
+    pid_t vis_pid = -1;
+    void *inject_data = NULL;
+
+    // with $HOME set, DR always creates $HOME/.dynamorio...
+    unsetenv("HOME");
+
+    pid = dr_setup(app_path, app_argv, client_path, &inject_data);
+    if (pid == -1) {
         goto cleanup;
     }
 
@@ -153,22 +208,13 @@ main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    success = dr_inject_process_run(inject_data);
-    fprintf(stderr, "dr_inject_process_run: %s\n", STATUS_MSG(success));
+    success = dr_run(&inject_data);
     if (!success) {
         goto cleanup;
     }
 
-    dr_inject_wait_for_child(inject_data, 0);
-
 cleanup:
-    exitcode = dr_inject_process_exit(inject_data, true);
-    fprintf(stderr, "dr_inject_process_exit: %d\n", exitcode);
-
-    if (pid != -1) {
-        status = dr_unregister_process(app_name, pid, false, DR_PLATFORM_DEFAULT);
-        fprintf(stderr, "dr_unregister_process: %s\n", dr_config_status_code_to_string(status));
-    }
+    exitcode = dr_cleanup(app_path, pid, &inject_data);
 
     if (vis_pid != -1) {
         int vis_status;
