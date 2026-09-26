@@ -1,6 +1,7 @@
 #include <libgen.h>
 #include <link.h>
 #include <linux/limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,77 @@ typedef struct __attribute__((aligned(16))) {
     size_t path_size;
 } find_dr_lib_data;
 
+static volatile sig_atomic_t g_shutting_down = 0;
+static process_id_t g_app_pid = -1;
+static pid_t g_vis_pid = -1;
+
+/*
+ * send SIGTERM to children (app and vis) when the launcher gets SIGTERM/SIGINT
+ */
+static void
+handle_shutdown_signal(int sig)
+{
+    fprintf(stderr, "got signal %d, shutting down...\n", sig);
+
+    g_shutting_down = 1;
+
+    if (g_app_pid != -1) {
+        kill(g_app_pid, SIGTERM);
+    }
+    if (g_vis_pid != -1) {
+        kill(g_vis_pid, SIGTERM);
+    }
+}
+
+/*
+ * signal handlers for graceful shutdown
+ */
+static void
+install_signal_handlers(void)
+{
+    struct sigaction sa = {0};
+    sa.sa_handler = handle_shutdown_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+}
+
+/*
+ * wait for `pid` to exit, or gracefully terminate if shutting down
+ */
+static void
+waitpid_graceful(const pid_t pid)
+{
+    int status;
+
+    if (g_shutting_down) {
+        // give it some time to exit after SIGTERM, then SIGKILL if it's still running
+        int waited_ms = 0;
+        pid_t r;
+        while ((r = waitpid(pid, &status, WNOHANG)) == 0 && waited_ms < 2000) {
+            usleep(100000);
+            waited_ms += 100;
+        }
+        if (r == 0) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+        } else if (r == -1) {
+            perror("waitpid");
+        }
+    } else {
+        // still running, just wait until user closes it
+        if (waitpid(pid, &status, 0) == -1) {
+            perror("waitpid");
+        }
+    }
+
+    fprintf(stderr, "waitpid: %d\n", status);
+}
+
+/*
+ * callback for `dl_iterate_phdr` to find libdynamorio.so
+ */
 static int
 find_dr_lib_cb(struct dl_phdr_info *info, size_t size, void *data)
 {
@@ -41,8 +113,11 @@ find_dr_lib_cb(struct dl_phdr_info *info, size_t size, void *data)
     return 0;
 }
 
+/*
+ * inject the linked libdynamorio.so path to avoid specifying DR root
+ */
 static bool
-dr_override_root(const char *app_name, const process_id_t pid)
+dr_override_root(const char *app_name, const process_id_t app_pid)
 {
     char dr_lib_path[PATH_MAX] = {0};
 
@@ -57,8 +132,8 @@ dr_override_root(const char *app_name, const process_id_t pid)
         return false;
     }
 
-    dr_config_status_t status = dr_register_inject_paths(app_name, pid, false, DR_PLATFORM_DEFAULT,
-                                                         dr_lib_path, dr_lib_path);
+    dr_config_status_t status = dr_register_inject_paths(
+        app_name, app_pid, false, DR_PLATFORM_DEFAULT, dr_lib_path, dr_lib_path);
     fprintf(stderr, "dr_register_inject_paths: %s\n", dr_config_status_code_to_string(status));
     if (status != DR_SUCCESS) {
         return false;
@@ -88,16 +163,16 @@ dr_setup(char app_path[], const char *app_argv[], char client_path[], void **inj
         return -1;
     }
 
-    process_id_t pid = dr_inject_get_process_id(*inject_data);
+    process_id_t app_pid = dr_inject_get_process_id(*inject_data);
 
-    status = dr_register_process(app_name, pid, false, "", DR_MODE_CODE_MANIPULATION, false,
+    status = dr_register_process(app_name, app_pid, false, "", DR_MODE_CODE_MANIPULATION, false,
                                  DR_PLATFORM_DEFAULT, NULL);
     fprintf(stderr, "dr_register_process: %s\n", dr_config_status_code_to_string(status));
     if (status != DR_SUCCESS) {
         return -1;
     }
 
-    success = dr_override_root(app_name, pid);
+    success = dr_override_root(app_name, app_pid);
     fprintf(stderr, "dr_override_root: %s\n", STATUS_MSG(success));
     if (!success) {
         return -1;
@@ -108,7 +183,7 @@ dr_setup(char app_path[], const char *app_argv[], char client_path[], void **inj
         .path = client_path,
         .options = "",
     };
-    status = dr_register_client_ex(app_name, pid, false, DR_PLATFORM_DEFAULT, &client_info);
+    status = dr_register_client_ex(app_name, app_pid, false, DR_PLATFORM_DEFAULT, &client_info);
     fprintf(stderr, "dr_register_client_ex: %s\n", dr_config_status_code_to_string(status));
     if (status != DR_SUCCESS) {
         return -1;
@@ -120,7 +195,7 @@ dr_setup(char app_path[], const char *app_argv[], char client_path[], void **inj
         return -1;
     }
 
-    return pid;
+    return app_pid;
 }
 
 /*
@@ -142,16 +217,16 @@ dr_run(void **inject_data)
  * stop and unregister the injected process
  */
 static int
-dr_cleanup(char app_path[], const process_id_t pid, void **inject_data)
+dr_cleanup(char app_path[], const process_id_t app_pid, void **inject_data)
 {
     const char *app_name = basename(app_path);
 
     int exitcode = dr_inject_process_exit(*inject_data, true);
     fprintf(stderr, "dr_inject_process_exit: %d\n", exitcode);
 
-    if (pid != -1) {
+    if (app_pid != -1) {
         dr_config_status_t status =
-            dr_unregister_process(app_name, pid, false, DR_PLATFORM_DEFAULT);
+            dr_unregister_process(app_name, app_pid, false, DR_PLATFORM_DEFAULT);
         fprintf(stderr, "dr_unregister_process: %s\n", dr_config_status_code_to_string(status));
     }
 
@@ -174,17 +249,20 @@ main(int argc, char *argv[])
     snprintf(app_path, sizeof(app_path), "%s", argv[3]);
     const char **app_argv = (const char **)&argv[3];
 
-    process_id_t pid = -1;
+    process_id_t app_pid = -1;
     pid_t vis_pid = -1;
     void *inject_data = NULL;
+
+    install_signal_handlers();
 
     // with $HOME set, DR always creates $HOME/.dynamorio...
     unsetenv("HOME");
 
-    pid = dr_setup(app_path, app_argv, client_path, &inject_data);
-    if (pid == -1) {
+    app_pid = dr_setup(app_path, app_argv, client_path, &inject_data);
+    if (app_pid == -1) {
         goto cleanup;
     }
+    g_app_pid = app_pid;
 
     ring_buf_t *ring_shm = shm_init(true);
     success = ring_shm != NULL;
@@ -207,6 +285,7 @@ main(int argc, char *argv[])
         perror("execlp");
         exit(EXIT_FAILURE);
     }
+    g_vis_pid = vis_pid;
 
     success = dr_run(&inject_data);
     if (!success) {
@@ -214,14 +293,10 @@ main(int argc, char *argv[])
     }
 
 cleanup:
-    exitcode = dr_cleanup(app_path, pid, &inject_data);
+    exitcode = dr_cleanup(app_path, app_pid, &inject_data);
 
     if (vis_pid != -1) {
-        int vis_status;
-        if (waitpid(vis_pid, &vis_status, 0) == -1) {
-            perror("waitpid");
-        }
-        fprintf(stderr, "waitpid: %d\n", vis_status);
+        waitpid_graceful(vis_pid);
     }
 
     shm_exit(&ring_shm);
