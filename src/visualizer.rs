@@ -66,12 +66,14 @@ impl Visualizer {
         }
     }
 
-    pub fn process_chunk(&mut self) {
+    pub fn process_chunk(&mut self) -> usize {
         let chunk = self.source.poll_chunk();
+        let len = chunk.len();
         for entry in chunk {
             let (x, y) = addr_to_coords(entry.addr as u64);
             self.heatmap.add_access(x, y, entry.write);
         }
+        len
     }
 
     #[allow(clippy::indexing_slicing)]

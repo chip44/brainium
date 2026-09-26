@@ -1,7 +1,6 @@
-use std::time::{Duration, Instant};
-
 use eframe::egui;
 use eframe::wgpu;
+use std::time::{Duration, Instant};
 
 use crate::visualizer::{GRID_SIZE, Visualizer};
 
@@ -21,6 +20,8 @@ pub struct App {
     visualizer: Visualizer,
     /// last render time, used to limit fps to avoid repeated heavy computation
     last_update: Instant,
+    total_entries: u64,
+    entries_rate: f64,
 }
 
 impl App {
@@ -64,6 +65,8 @@ impl App {
             framebuffer_id,
             visualizer,
             last_update: Instant::now(),
+            total_entries: 0,
+            entries_rate: 0.0,
         }
     }
 
@@ -102,7 +105,13 @@ impl eframe::App for App {
 
         self.last_update += FRAME_TIME;
 
-        self.visualizer.process_chunk();
+        let entries_num = self.visualizer.process_chunk() as u64;
+        self.total_entries += entries_num;
+
+        let alpha = 0.25;
+        let instant_rate = (entries_num as f64) / dt.as_secs_f64();
+        self.entries_rate = self.entries_rate.mul_add(1.0 - alpha, instant_rate * alpha);
+
         self.visualizer.render(&mut self.framebuffer, dt);
     }
 
@@ -112,7 +121,8 @@ impl eframe::App for App {
         }
 
         egui::Panel::left("sidebar").show(ui, |ui| {
-            ui.heading(APP_NAME);
+            ui.label(format!("{} entries", self.total_entries));
+            ui.label(format!("{:.0} en/s", self.entries_rate));
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
