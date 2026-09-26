@@ -58,8 +58,9 @@ impl RingBuf {
             let cell = &self.buffer[(pos as usize) & RING_MASK];
 
             let seq = cell.seq.load(Ordering::Acquire);
-            let diff = (seq as i64) - ((pos + 1) as i64);
 
+            // signed diff so sequence-number wraparound is handled correctly
+            let diff = (seq as i64) - ((pos + 1) as i64);
             if diff < 0 {
                 // caught up to the producers
                 break;
