@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "dr_api.h"
+#include "dr_tools.h"
 #include "drmgr.h"
 #include "drreg.h"
 #include "drutil.h"
@@ -81,7 +82,7 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
         .name = "brainium",
         .priority = 0,
     };
-    dr_set_client_name("Brainium Client", "https://github.com/chip44/brainium/issues");
+    dr_set_client_name("Brainium client", "https://github.com/chip44/brainium/issues");
     page_size = dr_page_size();
     drmgr_init();
     drutil_init();
@@ -91,7 +92,6 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
         !drmgr_register_bb_app2app_event(event_bb_app2app, &priority) ||
         !drmgr_register_bb_instrumentation_event(NULL, event_bb_insert, &priority) ||
         drreg_init(&ops) != DRREG_SUCCESS || !drx_init()) {
-        /* something is wrong: can't continue */
         DR_ASSERT(false);
         return;
     }
@@ -99,6 +99,11 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     DR_ASSERT(tls_index != -1);
 
     ring_shm = shm_init(false);
+    if (!ring_shm) {
+        DR_ASSERT(false);
+        return;
+    }
+
     code_cache_init();
     /* make it easy to tell, by looking at log file, which client executed */
     dr_log(NULL, DR_LOG_ALL, 1, "Brainium client initializing\n");
@@ -124,13 +129,22 @@ event_exit(void)
 static void
 event_thread_init(void *drcontext)
 {
-    /* allocate thread-private data */
+    // allocate thread-private data
     per_thread_t *data = dr_thread_alloc(drcontext, sizeof(per_thread_t));
     drmgr_set_tls_field(drcontext, tls_index, data);
-    data->buf_base = dr_thread_alloc(drcontext, MEM_BUF_SIZE);
+
+    /*
+     * use dr_raw_mem_alloc instead of dr_thread_alloc to get page-aligned memory for mem_ref_t's
+     * 32-byte alignment requirement (dr_thread_alloc only guarantees pointer-size alignment).
+     */
+    data->buf_base = dr_raw_mem_alloc(MEM_BUF_SIZE, DR_MEMPROT_READ | DR_MEMPROT_WRITE, NULL);
+    DR_ASSERT(data->buf_base != NULL);
+
     data->buf_ptr = data->buf_base;
-    /* set buf_end to be negative of address of buffer end for the lea later */
+
+    // set buf_end to be negative of address of buffer end for the lea later
     data->buf_end = -(ptr_int_t)(data->buf_base + MEM_BUF_SIZE);
+
     data->num_refs = 0;
 }
 
@@ -139,7 +153,7 @@ event_thread_exit(void *drcontext)
 {
     memtrace(drcontext);
     per_thread_t *data = drmgr_get_tls_field(drcontext, tls_index);
-    dr_thread_free(drcontext, data->buf_base, MEM_BUF_SIZE);
+    dr_raw_mem_free(data->buf_base, MEM_BUF_SIZE);
     dr_thread_free(drcontext, data, sizeof(per_thread_t));
 }
 
