@@ -1,8 +1,8 @@
-use eframe::egui;
-use eframe::wgpu;
+use eframe::{egui, wgpu};
 use std::time::{Duration, Instant};
 
-use crate::visualizer::{GRID_SIZE, Visualizer};
+use crate::poller::Poller;
+use crate::visualizer::{GRID_SIZE, HeatGrid, Visualizer};
 
 pub const APP_NAME: &str = "Brainium";
 
@@ -11,27 +11,46 @@ const FPS: u64 = 15;
 /// frame time of `FPS`
 const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000 / FPS);
 
+struct Stats {
+    last_total_entries: u64,
+    total_entries: u64,
+    entries_rate: f64,
+}
+
+impl Default for Stats {
+    fn default() -> Self {
+        Self {
+            last_total_entries: 0,
+            total_entries: 0,
+            entries_rate: 0.0,
+        }
+    }
+}
+
 pub struct App {
     /// holds raw pixel data (RGBA) for the pixel grid
     framebuffer: Vec<u8>,
     framebuffer_texture: wgpu::Texture,
     framebuffer_id: egui::TextureId,
-    /// responsible for fetching data and framebuffer update logic
+    /// applies polled entries to the heatmap and renders it
     visualizer: Visualizer,
+    /// polls entries on its own thread
+    poller: Poller,
     /// last render time, used to limit fps to avoid repeated heavy computation
     last_update: Instant,
-    total_entries: u64,
-    entries_rate: f64,
+    /// entries statistics
+    stats: Stats,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, visualizer: Visualizer) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let render_state = cc.wgpu_render_state.as_ref().expect("wgpu renderer");
 
         let device = &render_state.device;
 
         let framebuffer_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("framebuffer"),
+            #[allow(clippy::cast_possible_truncation)]
             size: wgpu::Extent3d {
                 width: GRID_SIZE as u32,
                 height: GRID_SIZE as u32,
@@ -54,6 +73,8 @@ impl App {
             wgpu::FilterMode::Nearest,
         );
 
+        let grid = HeatGrid::new();
+
         Self {
             // init the whole framebuffer to fully-opaque black pixels
             framebuffer: vec![0, 0, 0, 255]
@@ -63,10 +84,10 @@ impl App {
                 .collect(),
             framebuffer_texture,
             framebuffer_id,
-            visualizer,
+            visualizer: Visualizer::new(grid.clone()),
+            poller: Poller::spawn(grid),
             last_update: Instant::now(),
-            total_entries: 0,
-            entries_rate: 0.0,
+            stats: Stats::default(),
         }
     }
 
@@ -82,8 +103,8 @@ impl App {
             &self.framebuffer,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(GRID_SIZE as u32 * 4),
-                rows_per_image: Some(GRID_SIZE as u32),
+                bytes_per_row: u32::try_from(GRID_SIZE * 4).ok(),
+                rows_per_image: u32::try_from(GRID_SIZE).ok(),
             },
             self.framebuffer_texture.size(),
         );
@@ -103,14 +124,18 @@ impl eframe::App for App {
             return;
         }
 
-        self.last_update += FRAME_TIME;
+        self.last_update = now;
 
-        let entries_num = self.visualizer.process_chunk() as u64;
-        self.total_entries += entries_num;
+        let total_entries = self.poller.total_entries();
+        let entries_num = total_entries - self.stats.last_total_entries;
+        self.stats.last_total_entries = total_entries;
+        self.stats.total_entries = total_entries;
 
         let alpha = 0.25;
+        #[allow(clippy::cast_precision_loss)]
         let instant_rate = (entries_num as f64) / dt.as_secs_f64();
-        self.entries_rate = self.entries_rate.mul_add(1.0 - alpha, instant_rate * alpha);
+        let entries_rate = self.stats.entries_rate;
+        self.stats.entries_rate = entries_rate.mul_add(1.0 - alpha, instant_rate * alpha);
 
         self.visualizer.render(&mut self.framebuffer, dt);
     }
@@ -120,15 +145,19 @@ impl eframe::App for App {
             self.upload_framebuffer(&render_state.queue);
         }
 
-        egui::Panel::left("sidebar").show(ui, |ui| {
-            ui.label(format!("{} entries", self.total_entries));
-            ui.label(format!("{:.0} en/s", self.entries_rate));
-        });
+        egui::Panel::left("sidebar")
+            .resizable(false)
+            .show(ui, |ui| {
+                ui.heading("Statistics");
+                ui.label(format!("{} entries", self.stats.total_entries));
+                ui.label(format!("{:.0} en/s", self.stats.entries_rate));
+            });
 
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::both()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    #[allow(clippy::cast_precision_loss)]
                     ui.image(egui::load::SizedTexture::new(
                         self.framebuffer_id,
                         [GRID_SIZE as f32, GRID_SIZE as f32],

@@ -1,7 +1,6 @@
 use color_eyre::{Result, eyre::bail};
 use shared_memory::{Shmem, ShmemConf};
 use std::{
-    ffi::c_void,
     fs::File,
     io::{BufRead, BufReader},
     mem::ManuallyDrop,
@@ -9,11 +8,11 @@ use std::{
 
 use crate::ring::{MemRef, RingBuf};
 
-const CHUNK_SIZE: usize = 1 << 13;
+pub const CHUNK_SIZE: usize = 1 << 14;
 
 pub trait DataSource {
     /// try to get the next chunk
-    fn poll_chunk(&mut self) -> Vec<MemRef>;
+    fn poll_chunk(&mut self, out: &mut Vec<MemRef>);
 }
 
 pub struct FileSource {
@@ -28,7 +27,6 @@ impl FileSource {
         Ok(Self { reader })
     }
 
-    #[allow(clippy::indexing_slicing)]
     fn process_line(line: &str) -> Result<MemRef> {
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() != 4 {
@@ -37,18 +35,18 @@ impl FileSource {
 
         let write = parts[1].trim().chars().next().unwrap_or('r') != 'r';
         let size = parts[2].trim().parse()?;
-        let addr = u64::from_str_radix(parts[3].trim_start_matches("0x"), 16)? as *mut c_void;
+        let addr = u64::from_str_radix(parts[3].trim_start_matches("0x"), 16)?;
 
         Ok(MemRef { write, addr, size })
     }
 }
 
 impl DataSource for FileSource {
-    fn poll_chunk(&mut self) -> Vec<MemRef> {
-        let mut entries = Vec::with_capacity(CHUNK_SIZE);
+    fn poll_chunk(&mut self, out: &mut Vec<MemRef>) {
+        out.clear();
         let mut line = String::new();
 
-        for _ in 0..CHUNK_SIZE {
+        for _ in 0..out.capacity() {
             line.clear();
             match self.reader.read_line(&mut line) {
                 Ok(bytes_read) => {
@@ -56,15 +54,13 @@ impl DataSource for FileSource {
                         break;
                     }
                     match Self::process_line(line.trim()) {
-                        Ok(entry) => entries.push(entry),
+                        Ok(entry) => out.push(entry),
                         Err(e) => eprintln!("failed processing line '{}': {}", line.trim(), e),
                     }
                 }
                 Err(e) => eprintln!("failed reading line: {e}"),
             }
         }
-
-        entries
     }
 }
 
@@ -119,7 +115,7 @@ impl Drop for RingSource {
 }
 
 impl DataSource for RingSource {
-    fn poll_chunk(&mut self) -> Vec<MemRef> {
-        self.ring().pop_bulk(CHUNK_SIZE)
+    fn poll_chunk(&mut self, out: &mut Vec<MemRef>) {
+        self.ring().pop_bulk(out);
     }
 }

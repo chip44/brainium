@@ -1,24 +1,32 @@
 use fast_hilbert::h2xy;
 use palette::{Hsl, IntoColor, Srgb};
-use std::{collections::HashMap, time::Duration};
-
-use crate::reader::DataSource;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 const HILBERT_ORDER: u8 = 10;
 pub const GRID_SIZE: usize = 1 << HILBERT_ORDER;
 const GRID_MASK: u64 = (1u64 << (2 * HILBERT_ORDER)) - 1;
 
-fn addr_to_coords(addr: u64) -> (u32, u32) {
-    let index = addr & GRID_MASK;
+/// each grid cell represents one 4KB page.
+/// nearby pages end up on nearby cells, while addresses in the same page collapse onto the same cell.
+const PAGE_SHIFT: u32 = 12; // 2^12 = 4096 bytes per cell
+
+pub fn addr_to_coords(addr: u64) -> (u32, u32) {
+    let page = addr >> PAGE_SHIFT;
+    let index = page & GRID_MASK;
     h2xy(index, HILBERT_ORDER)
 }
 
-const fn coords_to_grid(x: u32, y: u32) -> usize {
-    ((y as usize) * GRID_SIZE + (x as usize)) * 4
-}
-
-fn heat_to_color(write: bool, heat: f32) -> [u8; 3] {
-    let heat = heat.clamp(0.0, 1.0);
+/// heat is stored as a signed f32: magnitude is intensity (0.0..=1.0),
+/// sign is the access type (write=negative read=positive).
+fn heat_to_color(signed_heat: f32) -> [u8; 3] {
+    let write = signed_heat.is_sign_negative();
+    let heat = signed_heat.abs().clamp(0.0, 1.0);
     let hue = if write { 0.0 } else { 220.0 }; // write=red read=blue
 
     let hsl = Hsl::new(hue, 1.0, heat);
@@ -27,70 +35,62 @@ fn heat_to_color(write: bool, heat: f32) -> [u8; 3] {
     [rgb.red, rgb.green, rgb.blue]
 }
 
-struct HeatMap {
-    data: HashMap<(u32, u32), (bool, f32)>,
-    half_life: Duration,
+pub struct HeatGrid {
+    /// grid of bit-cast f32 (to store heat + access type) so both the poller and ui thread can
+    /// read/write lock-free
+    cells: Vec<AtomicU32>,
 }
 
-impl HeatMap {
-    fn new(half_life: Duration) -> Self {
-        Self {
-            data: HashMap::new(),
-            half_life,
-        }
+impl HeatGrid {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            cells: (0..GRID_SIZE * GRID_SIZE)
+                .map(|_| AtomicU32::new(0f32.to_bits()))
+                .collect(),
+        })
     }
 
-    fn add_access(&mut self, x: u32, y: u32, write: bool) {
-        self.data.insert((x, y), (write, 1.0));
-    }
-
-    fn decay(&mut self, dt: Duration) {
-        let factor = 0.5_f32.powf(dt.as_secs_f32() / self.half_life.as_secs_f32());
-        self.data.retain(|_, (_, heat)| {
-            *heat *= factor;
-            *heat > 0.01
-        });
+    #[inline]
+    pub fn add_access(&self, x: u32, y: u32, write: bool) {
+        let idx = (y as usize) * GRID_SIZE + (x as usize);
+        let value: f32 = if write { -1.0 } else { 1.0 };
+        self.cells[idx].store(value.to_bits(), Ordering::Relaxed);
     }
 }
 
 pub struct Visualizer {
-    source: Box<dyn DataSource>,
-    heatmap: HeatMap,
+    grid: Arc<HeatGrid>,
+    half_life: Duration,
 }
 
 impl Visualizer {
-    pub fn new(source: Box<dyn DataSource>) -> Self {
+    pub const fn new(grid: Arc<HeatGrid>) -> Self {
         Self {
-            source,
-            heatmap: HeatMap::new(Duration::from_secs(2)),
+            grid,
+            half_life: Duration::from_secs(2),
         }
     }
 
-    pub fn process_chunk(&mut self) -> usize {
-        let chunk = self.source.poll_chunk();
-        let len = chunk.len();
-        for entry in chunk {
-            let (x, y) = addr_to_coords(entry.addr as u64);
-            self.heatmap.add_access(x, y, entry.write);
-        }
-        len
-    }
+    /// render the grid onto the frame buffer
+    pub fn render(&self, frame: &mut [u8], dt: Duration) {
+        let factor = 0.5_f32.powf(dt.as_secs_f32() / self.half_life.as_secs_f32());
+        let pixels = frame.as_chunks_mut::<4>().0;
 
-    #[allow(clippy::indexing_slicing)]
-    pub fn render(&mut self, frame: &mut [u8], dt: Duration) {
-        // clear screen
-        for pixel in frame.as_chunks_mut::<4>().0 {
-            pixel[..3].fill(0);
-        }
+        for (cell, pixel) in self.grid.cells.iter().zip(pixels) {
+            let mut heat = f32::from_bits(cell.load(Ordering::Relaxed));
 
-        // draw heatmap
-        for ((x, y), (write, heat)) in &self.heatmap.data {
-            let idx = coords_to_grid(*x, *y);
-            let color = heat_to_color(*write, *heat);
-            frame[idx..idx + 3].copy_from_slice(&color);
-        }
+            // decay
+            heat *= factor;
 
-        // update heatmap
-        self.heatmap.decay(dt);
+            if heat.abs() < 0.01 {
+                // clear if fully-decayed
+                heat = 0.0;
+                pixel[..3].fill(0);
+            } else {
+                // update color
+                pixel[..3].copy_from_slice(&heat_to_color(heat));
+            }
+            cell.store(heat.to_bits(), Ordering::Relaxed);
+        }
     }
 }

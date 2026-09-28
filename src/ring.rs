@@ -1,7 +1,4 @@
-use std::{
-    ffi::c_void,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const RING_SIZE: usize = 1 << 20;
 pub const RING_MASK: usize = RING_SIZE - 1;
@@ -10,7 +7,9 @@ pub const RING_MASK: usize = RING_SIZE - 1;
 #[derive(Debug, Clone)]
 pub struct MemRef {
     pub write: bool,
-    pub addr: *mut c_void,
+    // NOTE: technically this should be `*mut c_void` but we only use it as u64 so in this case it's
+    // easier because no unsafe is needed. this would only error on 32-bit.
+    pub addr: u64,
     pub size: usize,
 }
 
@@ -49,12 +48,12 @@ impl RingBuf {
         clippy::cast_possible_truncation,
         clippy::indexing_slicing
     )]
-    pub fn pop_bulk(&mut self, max_count: usize) -> Vec<MemRef> {
-        let mut entries = Vec::with_capacity(max_count);
+    pub fn pop_bulk(&mut self, out: &mut Vec<MemRef>) {
+        out.clear();
 
         let mut pos = self.dequeue_pos;
 
-        for _ in 0..max_count {
+        for _ in 0..out.capacity() {
             let cell = &self.buffer[(pos as usize) & RING_MASK];
 
             let seq = cell.seq.load(Ordering::Acquire);
@@ -66,13 +65,11 @@ impl RingBuf {
                 break;
             }
 
-            entries.push(cell.data.clone());
+            out.push(cell.data.clone());
             cell.seq.store(pos + (RING_SIZE as u64), Ordering::Release);
             pos += 1;
         }
 
         self.dequeue_pos = pos;
-
-        entries
     }
 }
