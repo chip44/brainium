@@ -19,6 +19,8 @@ add_compile_definitions(
     _GNU_SOURCE
 )
 
+set(CMAKE_C_FLAGS_RELWITHDEBINFO "-DNDEBUG -g -O3 -march=native -ffast-math -flto")
+
 find_package(DynamoRIO REQUIRED)
 
 # launcher
